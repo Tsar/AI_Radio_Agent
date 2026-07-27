@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Виртуальные окружения
+.venv/
+venv/
+env/
+
+# Генерируемые аудио-артефакты (тестовые входы вроде .mp3 — коммитим)
+/out.wav
+*.out.wav
+
+# Редакторы / ОС
+.vscode/
+.idea/
+*.swp
+.DS_Store
