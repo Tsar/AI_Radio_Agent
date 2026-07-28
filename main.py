@@ -17,7 +17,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from ai_radio.calibrate import calibrate_file, print_report
+from ai_radio.calibrate import calibrate_file, calibrate_live, print_report
 from ai_radio.config import Config
 from ai_radio.ptt import make_ptt
 from ai_radio.repeater import Repeater
@@ -36,7 +36,14 @@ def _apply_common(cfg: Config, args: argparse.Namespace) -> None:
 def cmd_calibrate(args: argparse.Namespace) -> int:
     cfg = Config()
     cfg.audio.frame_ms = args.frame_ms
-    res = calibrate_file(args.in_file, cfg)
+    if args.live:
+        res = calibrate_live(cfg, device=args.in_device,
+                             device_rate=args.device_rate, seconds=args.seconds)
+    else:
+        if not args.in_file:
+            print("нужен --in-file (или --live для микрофона)", file=sys.stderr)
+            return 2
+        res = calibrate_file(args.in_file, cfg)
     print_report(res)
     return 0
 
@@ -110,8 +117,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="ai_radio", description="AI Radio Agent")
     sub = p.add_subparsers(dest="command", required=True)
 
-    c = sub.add_parser("calibrate", help="подобрать порог VAD по аудиофайлу")
-    c.add_argument("--in-file", required=True, help="путь к аудиофайлу (mp3/wav/...)")
+    c = sub.add_parser("calibrate", help="подобрать порог VAD по файлу или с микрофона")
+    c.add_argument("--in-file", help="путь к аудиофайлу (mp3/wav/...)")
+    c.add_argument("--live", action="store_true", help="калибровать с живого микрофона")
+    c.add_argument("--seconds", type=float, default=12.0, help="сколько слушать в live, с")
+    c.add_argument("--in-device", help="устройство записи для live (индекс или часть имени)")
+    c.add_argument("--device-rate", type=int, help="родная частота карты, если не умеет 16000")
     c.add_argument("--frame-ms", type=int, default=20, help="длина кадра, мс (по умолчанию 20)")
     c.set_defaults(func=cmd_calibrate)
 
