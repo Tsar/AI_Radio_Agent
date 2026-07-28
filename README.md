@@ -51,25 +51,36 @@
 ```bash
 # системное
 sudo apt install ffmpeg libportaudio2
+# для venv на Debian/Ubuntu бывает нужен пакет venv (в нём ensurepip):
+sudo apt install python3-venv          # или python3.X-venv под вашу версию
 
-# python-зависимости (для живого режима); можно в venv
-pip install -r requirements.txt
+# python-зависимости (для живого режима) в изолированном окружении:
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
 ```
+
+Дальше запускайте через `.venv/bin/python main.py …` (или `source .venv/bin/activate`).
+Калибровка и прогон на файле работают и на системном `python3` без venv.
 
 ## Использование
 
-### Калибровка порога VAD по записи
+### Калибровка порога VAD
 
+По записи из файла:
 ```bash
 python3 main.py calibrate --in-file запись.mp3
 ```
+Или вживую с микрофона (первые ~4 с молчите — замерится фон, потом говорите):
+```bash
+.venv/bin/python main.py calibrate --live --seconds 12
+```
 Печатает шумовой пол, уровень сигнала, рекомендованный порог и ASCII-гистограмму
-громкости. Пример (запись с Optim-778):
+громкости. Примеры замеров:
 ```
-шумовой пол:        -60.6 dBFS
-уровень сигнала:    -26.7 dBFS
->>> РЕКОМЕНДОВАННЫЙ ПОРОГ: -48.6 dBFS  (threshold = 0.00369)
+# рация Optim-778 (line-in):      фон -60.6 → порог -48.6 dBFS (threshold 0.00369)
+# живой микрофон (тихая комната):  фон -70.6 → порог -58.6 dBFS (threshold 0.00118)
 ```
+Полученный порог подставляйте в `--threshold`.
 
 ### Репитер на файле (симуляция)
 
@@ -92,6 +103,25 @@ python3 main.py run --live --ptt txdbreak --port /dev/ttyUSB0 --in-device 2 --ou
 # если карта не умеет 16 кГц — указать её родную частоту:
 python3 main.py run --live --device-rate 48000 ...
 ```
+
+### Тест без рации (микрофон + наушники)
+
+Живой конвейер можно проверить без радио: микрофон играет роль «приёма», наушники —
+«передачи», PTT — заглушка. Петли/эха нет, если использовать **наушники, а не колонки**.
+
+```bash
+# 1) откалибровать порог под микрофон
+.venv/bin/python main.py calibrate --live --seconds 12
+# 2) запустить parrot с полученным порогом
+.venv/bin/python main.py run --live --threshold 0.0012
+```
+Говорите → замолкаете на ~секунду (hangtime) → слышите свой голос обратно.
+
+Вход/выход выбираются в настройках звука (или флагами `--in-device`/`--out-device`).
+Проще всего оставить системный дефолт через PipeWire/PulseAudio — он сам ресемплит в 16 кГц.
+**Bluetooth-наушники** для вывода годятся, но: (1) добавляют задержку ~0.1–0.3 с (parrot
+вернётся с паузой — это норма); (2) держите вход на отдельном (не BT) микрофоне, иначе
+гарнитура уйдёт в режим HFP и звук выхода схлопнется до «телефонного».
 
 ### Тест PTT-линии (осциллографом)
 
@@ -141,7 +171,7 @@ ai_radio/
   audio_io.py    # FileSource (ffmpeg) + Wav/Null sink  — stdlib
   live_io.py     # MicSource + SpeakerSink (sounddevice)  — numpy импортируется локально
   vad.py         # energy VAD + метрики (RMS/dBFS)
-  calibrate.py   # подбор порога по файлу + гистограмма
+  calibrate.py   # подбор порога по файлу/микрофону + гистограмма
   ptt.py         # DummyPtt + TxdBreakPtt (break на TX, инверсия)
   responder.py   # Responder (шов для LLM) + ParrotResponder
   repeater.py    # state machine (half-duplex, preroll/hangtime, дренаж входа)
