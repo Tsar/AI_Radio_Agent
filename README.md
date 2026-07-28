@@ -174,7 +174,7 @@ ai_radio/
   calibrate.py   # подбор порога по файлу/микрофону + гистограмма
   ptt.py         # DummyPtt + TxdBreakPtt (break на TX, инверсия)
   responder.py   # Responder (шов для LLM) + ParrotResponder
-  repeater.py    # state machine (half-duplex, preroll/hangtime, дренаж входа)
+  repeater.py    # state machine (half-duplex, preroll/hangtime, пауза входа на TX)
 main.py          # CLI: calibrate | run [--live] | devices
 tools/
   break_test.py  # проверка PTT-линии осциллографом

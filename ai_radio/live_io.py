@@ -63,13 +63,16 @@ class MicSource:
                 mono = mono[:n].reshape(-1, self.decimate).mean(axis=1)
             yield mono.tolist()
 
-    def drain(self) -> None:
-        """Выбросить накопленный за время передачи вход (иначе поймаем своё эхо)."""
-        if self._stream is None:
-            return
-        avail = self._stream.read_available
-        if avail and avail > 0:
-            self._stream.read(avail)
+    def pause(self) -> None:
+        """Остановить захват на время передачи. При resume PortAudio сбрасывает
+        буфер, поэтому сказанное во время воспроизведения не накопится и не будет
+        воспроизведено повторно. Заодно нет input-overrun на чистой ALSA."""
+        if self._stream is not None and self._stream.active:
+            self._stream.stop()
+
+    def resume(self) -> None:
+        if self._stream is not None and not self._stream.active:
+            self._stream.start()
 
     def close(self) -> None:
         if self._stream is not None:
@@ -104,7 +107,8 @@ class SpeakerSink:
             x_old = np.linspace(0.0, 1.0, num=len(audio), endpoint=False)
             x_new = np.linspace(0.0, 1.0, num=n_out, endpoint=False)
             audio = np.interp(x_new, x_old, audio).astype(np.float32)
-        sd.play(audio, samplerate=self.play_rate, device=self.device)
+        # latency="high" сглаживает output-underrun на чистой ALSA (ценой большей задержки)
+        sd.play(audio, samplerate=self.play_rate, device=self.device, latency="high")
         sd.wait()
 
     def close(self) -> None:

@@ -92,24 +92,29 @@ class Repeater:
             print("[--] ответа нет, не передаём")
             return
         self._transmit(response)
-        self._drain_source()
 
     def _transmit(self, audio: List[float]) -> None:
         dur = len(audio) / self.cfg.audio.sample_rate
         self.n_transmissions += 1
         print(f"[TX] передача #{self.n_transmissions}: {dur:.2f} с")
+        self._pause_source()          # не копим вход, пока передаём (строгий half-duplex)
         self.ptt.key()
         self._sleep(self.cfg.tx.warmup_ms)
         self.sink.play(audio)
         self._sleep(self.cfg.tx.tail_ms)
         self.ptt.unkey()
         self._sleep(self.cfg.tx.cooldown_ms)
+        self._resume_source()         # снова слушаем; входной буфер сброшен рестартом
 
-    def _drain_source(self) -> None:
-        """Сбросить вход, накопленный за время передачи (актуально для микрофона)."""
-        drain = getattr(self.source, "drain", None)
-        if callable(drain):
-            drain()
+    def _pause_source(self) -> None:
+        fn = getattr(self.source, "pause", None)
+        if callable(fn):
+            fn()
+
+    def _resume_source(self) -> None:
+        fn = getattr(self.source, "resume", None)
+        if callable(fn):
+            fn()
 
     def _sleep(self, ms: int) -> None:
         if self.realtime and ms > 0:
