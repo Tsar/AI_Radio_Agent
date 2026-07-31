@@ -31,6 +31,7 @@ class Repeater:
         self.start_frames = cfg.vad.start_frames
         self.hangtime_frames = max(1, cfg.vad.hangtime_ms // cfg.audio.frame_ms)
         self.preroll_frames = max(0, cfg.vad.preroll_ms // cfg.audio.frame_ms)
+        self.max_utterance_samples = max(fs, cfg.vad.max_utterance_ms * cfg.audio.sample_rate // 1000)
 
         self.n_transmissions = 0
 
@@ -43,6 +44,7 @@ class Repeater:
         state = "IDLE"
         speech_run = 0
         silence_run = 0
+        capped = False               # буфер достиг лимита — дальше не копим
         utterance: List[float] = []
         preroll: "deque[List[float]]" = deque(maxlen=self.preroll_frames)
 
@@ -59,25 +61,38 @@ class Repeater:
                         for pf in preroll:      # preroll уже содержит атаку фразы
                             utterance.extend(pf)
                         silence_run = 0
+                        capped = False
                 else:
                     speech_run = 0
 
             elif state == "RECEIVING":
-                utterance.extend(frame)
+                if not capped:
+                    room = self.max_utterance_samples - len(utterance)
+                    if room >= len(frame):
+                        utterance.extend(frame)
+                    else:
+                        if room > 0:
+                            utterance.extend(frame[:room])  # добить ровно до лимита
+                        capped = True
+                        limit_s = self.cfg.vad.max_utterance_ms / 1000.0
+                        print(f"[RX] буфер достиг лимита {limit_s:.0f} с — "
+                              f"дальше не буферизуем, ждём конца передачи")
                 if speech:
                     silence_run = 0
                 else:
                     silence_run += 1
                     if silence_run >= self.hangtime_frames:
-                        self._end_utterance(utterance, silence_run)
+                        # при cap хвостовой тишины в буфере нет — срезать нечего
+                        self._end_utterance(utterance, 0 if capped else silence_run)
                         state = "IDLE"
                         speech_run = silence_run = 0
+                        capped = False
                         utterance = []
                         preroll.clear()
 
         # поток кончился, а мы ещё принимали — до-передать
         if state == "RECEIVING":
-            self._end_utterance(utterance, silence_run)
+            self._end_utterance(utterance, 0 if capped else silence_run)
 
     def _end_utterance(self, utterance: List[float], trailing_silence_frames: int) -> None:
         # срезать хвостовую тишину (hangtime), чтобы не гнать её в эфир

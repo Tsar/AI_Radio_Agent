@@ -31,6 +31,8 @@ def _apply_common(cfg: Config, args: argparse.Namespace) -> None:
         cfg.vad.threshold = args.threshold
     if getattr(args, "hangtime_ms", None) is not None:
         cfg.vad.hangtime_ms = args.hangtime_ms
+    if getattr(args, "max_utterance_ms", None) is not None:
+        cfg.vad.max_utterance_ms = args.max_utterance_ms
 
 
 def cmd_calibrate(args: argparse.Namespace) -> int:
@@ -132,6 +134,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--out-file", help="куда записать переданное WAV (файловый режим)")
     r.add_argument("--threshold", type=float, help="порог VAD (переопределить дефолт)")
     r.add_argument("--hangtime-ms", type=int, help="тишины до конца передачи (склейка пауз)")
+    r.add_argument("--max-utterance-ms", type=int, help="предел буфера приёма, мс (по умолчанию 60000)")
     r.add_argument("--frame-ms", type=int, default=20, help="длина кадра, мс")
     r.add_argument("--realtime", action="store_true",
                    help="файловый режим в реальном темпе (в live всегда включено)")
