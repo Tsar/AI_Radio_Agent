@@ -10,7 +10,9 @@ import array
 import shutil
 import subprocess
 import time
-from typing import Iterator, List, Optional
+from typing import Iterator, List, Optional, Sequence
+
+from .vad import dbfs_to_rms
 
 
 def ffmpeg_bin() -> str:
@@ -61,9 +63,7 @@ class FileSource:
                 produced_any = True
                 if len(buf) < bytes_per_frame:
                     buf = buf + b"\x00" * (bytes_per_frame - len(buf))  # добить хвост нулями
-                pcm = array.array("h")
-                pcm.frombytes(buf)
-                yield [s / 32768.0 for s in pcm]
+                yield pcm16_to_floats(buf)
                 if self.realtime:
                     time.sleep(frame_dur)
         finally:
@@ -85,9 +85,57 @@ class FileSource:
                 raise RuntimeError(f"ffmpeg не выдал аудио из {self.path!r}: {msg}")
 
 
+def resample_linear(samples: Sequence[float], src_rate: int, dst_rate: int) -> List[float]:
+    """Линейная ре-дискретизация. Одна реализация на всех: выход TTS (22050 → 16000)
+    и вывод в карту, не умеющую рабочую частоту (16000 → 48000).
+
+    numpy используется, если доступен (быстрее), иначе честный цикл — модуль обязан
+    оставаться импортируемым на голом stdlib, как и весь файловый режим.
+    """
+    n_in = len(samples)
+    if src_rate == dst_rate or n_in == 0:
+        return list(samples)
+    n_out = max(1, int(round(n_in * dst_rate / src_rate)))
+    try:
+        import numpy as np
+    except ImportError:
+        pass
+    else:
+        x_old = np.linspace(0.0, 1.0, num=n_in, endpoint=False)
+        x_new = np.linspace(0.0, 1.0, num=n_out, endpoint=False)
+        return np.interp(x_new, x_old, np.asarray(samples, dtype=np.float64)).tolist()
+
+    step = n_in / n_out
+    out: List[float] = []
+    for i in range(n_out):
+        pos = i * step
+        j = int(pos)
+        a = samples[j]
+        b = samples[j + 1] if j + 1 < n_in else a
+        out.append(a + (b - a) * (pos - j))
+    return out
+
+
+def normalize_peak(samples: Sequence[float], target_dbfs: float = -3.0) -> List[float]:
+    """Привести пик к target_dbfs. Уровень TTS иначе гуляет от фразы к фразе, а
+    глубина модуляции рации прямо зависит от амплитуды на её микрофонном входе."""
+    peak = max((abs(s) for s in samples), default=0.0)
+    if peak <= 0.0:
+        return list(samples)
+    gain = dbfs_to_rms(target_dbfs) / peak      # dBFS → линейная амплитуда
+    return [max(-1.0, min(1.0, s * gain)) for s in samples]
+
+
 def _floats_to_pcm16(samples: List[float]) -> bytes:
     pcm = array.array("h", (max(-32768, min(32767, int(s * 32767))) for s in samples))
     return pcm.tobytes()
+
+
+def pcm16_to_floats(data: bytes) -> List[float]:
+    """PCM s16le → list[float] в [-1, 1] — общий формат кадра во всём проекте."""
+    pcm = array.array("h")
+    pcm.frombytes(data)
+    return [s / 32768.0 for s in pcm]
 
 
 class NullSink:

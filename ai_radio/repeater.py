@@ -102,24 +102,29 @@ class Repeater:
         dur = len(utterance) / self.cfg.audio.sample_rate
         print(f"[RX] принята фраза: {dur:.2f} с")
 
-        response = self.responder.respond(utterance)
-        if not response:
-            print("[--] ответа нет, не передаём")
-            return
-        self._transmit(response)
+        # Вход на паузе на всё время «думаем + передаём» (строгий half-duplex).
+        # respond() у LLM работает секунды: незачитанный поток успел бы переполниться,
+        # а после возврата мы бы прогнали через VAD звук, накопившийся за время раздумий.
+        self._pause_source()
+        try:
+            response = self.responder.respond(utterance)
+            if not response:
+                print("[--] ответа нет, не передаём")
+                return
+            self._transmit(response)
+        finally:
+            self._resume_source()     # входной буфер сброшен рестартом стрима
 
     def _transmit(self, audio: List[float]) -> None:
         dur = len(audio) / self.cfg.audio.sample_rate
         self.n_transmissions += 1
         print(f"[TX] передача #{self.n_transmissions}: {dur:.2f} с")
-        self._pause_source()          # не копим вход, пока передаём (строгий half-duplex)
         self.ptt.key()
         self._sleep(self.cfg.tx.warmup_ms)
         self.sink.play(audio)
         self._sleep(self.cfg.tx.tail_ms)
         self.ptt.unkey()
         self._sleep(self.cfg.tx.cooldown_ms)
-        self._resume_source()         # снова слушаем; входной буфер сброшен рестартом
 
     def _pause_source(self) -> None:
         fn = getattr(self.source, "pause", None)

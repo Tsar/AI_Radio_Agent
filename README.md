@@ -11,8 +11,14 @@
 ## Статус
 
 **Этап 1 — готов:** parrot-репитер («попугай») — принятое ретранслируется обратно.
-Работает и на записи из файла (симуляция), и вживую на реальном железе. LLM пока нет —
-он встаёт на готовый шов `Responder` на этапе 2 (STT → LLM → TTS).
+Работает и на записи из файла (симуляция), и вживую на реальном железе.
+
+**Этап 2 — готов:** голосовой ответчик `STT → LLM → TTS`, целиком локальный (машина
+поедет на дачу без интернета). Агент отвечает **не на каждую передачу**, а по позывному
+(**«Феечка»**) плюс окно продолжения диалога. Включается флагом `--responder llm`,
+parrot остаётся ответчиком по умолчанию.
+
+Дальше — преобразование голоса (RVC) поверх Piper.
 
 ## Как это работает
 
@@ -31,20 +37,58 @@
 
 ```
 источник → EnergyVAD → [preroll + hangtime] → Responder → PTT + приёмник
- (файл/мик)  порог RMS    склейка фразы        (parrot)     (динамик/рация)
+ (файл/мик)  порог RMS    склейка фразы     parrot | LLM    (динамик/рация)
+```
+
+`Responder` — единственный шов, за которым живёт весь этап 2:
+
+```
+utterance → Whisper → позывной? → LLM → нормализация → Piper → нормализация
+  (аудио)    (STT)    окно диалога  (llama-server)  текста   (TTS)   уровня
 ```
 
 Состояния репитера: `IDLE → RECEIVING (буфер) → RESPONDING → TRANSMIT → IDLE`.
 `preroll` не даёт срезать атаку фразы, `hangtime` склеивает паузы между словами в одну
-реплику.
+реплику. Вход приостанавливается на **всё время «думаем + передаём»**: STT→LLM→TTS
+занимает секунды, и незачитанный поток иначе переполнится, а агент отреагировал бы на
+звук, накопившийся за время раздумий.
+
+Если агент не разобрал фразу, не услышал позывного или LLM недоступен — он **молчит**
+(`respond()` возвращает `None`, PTT не жмётся). Молчание здесь штатный исход.
 
 ## Требования
 
 - **Python 3.10+**
 - **ffmpeg** — декодирование/ресемплинг аудиофайлов (калибровка и файловый режим)
 - Для живого режима: **numpy**, **sounddevice**, **pyserial** и системный **libportaudio2**
+- Для этапа 2 (`--responder llm`): **faster-whisper**, **piper-tts**, **num2words**
+  и запущенный **llama-server**. Системный `espeak-ng` не нужен — piper-tts ≥ 1.6
+  несёт его внутри пакета
 
 Калибровка и прогон на файле работают только на stdlib + ffmpeg — numpy/sounddevice не нужны.
+Команда `trigger-test` тоже обходится stdlib: проверять позывной можно без моделей.
+
+### Модели этапа 2
+
+| Звено | Что используем | Почему |
+|---|---|---|
+| STT | faster-whisper `large-v3`, **`compute_type=int8`** | устойчив к шуму и узкой полосе рации; на Pascal FP16 идёт в 1/64 скорости, а CTranslate2 требует для него cc ≥ 7.0 |
+| LLM | llama-server + Qwen3-4B `Q4_K_M` | отдельный процесс, модель постоянно в VRAM |
+| TTS | Piper `ru_RU-irina-medium` (CPU) | быстрый; разницу с тяжёлыми TTS всё равно срезает полоса 300–3400 Гц |
+
+`int8` держим **и на dev-машине**: квантование слегка меняет выход, иначе качество на
+тестах и в проде разойдётся. Профиль укладывается в ~4.6 ГБ VRAM.
+
+Две настройки, проверенные на реальной записи с Optim-778 и на имитации тракта
+(Piper → полоса 300–3400 Гц → шум), обе неочевидные:
+
+- **`vad_filter` выключен.** Silero VAD внутри faster-whisper на узкополосном сигнале
+  вырезает почти всю речь, после чего Whisper галлюцинирует на остатке — вплоть до
+  пересказа собственного `initial_prompt`. Фразу нам уже вырезал energy VAD.
+- **`initial_prompt` длинный, целой фразой.** На тесте с позывным он дал 4/4
+  срабатывания против 3/4 без промпта. Короткий промпт (`"Феечка."`) оказался хуже
+  всех — 1/4: Whisper считает позывной уже прозвучавшим и **опускает** его в выводе.
+  Плата — изредка промпт протекает в результат, когда сказанное на него похоже.
 
 ## Установка
 
@@ -61,6 +105,68 @@ python3 -m venv .venv
 
 Дальше запускайте через `.venv/bin/python main.py …` (или `source .venv/bin/activate`).
 Калибровка и прогон на файле работают и на системном `python3` без venv.
+
+### Этап 2: модели и llama-server
+
+**Версия Python важна:** целимся в **3.10** (системный на Ubuntu 22.04, где стоит прод).
+Под свежие 3.13/3.14 ML-колёс может не быть — проще всего `uv` (скачает нужный
+интерпретатор сам, системный не тронет):
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv venv --python 3.10 .venv
+uv pip install -r requirements.txt -r requirements-ai.txt
+```
+
+`uv venv` создаёт окружение **без pip** — ставьте через `uv pip install`. И не забудьте
+`requirements.txt`: пересоздание venv стирает зависимости этапа 1.
+
+CUDA-библиотеки ставятся pip-пакетами (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`), сам
+CUDA toolkit в системе не нужен. Их каталоги не лежат в путях загрузчика, поэтому
+`preload_cuda_libs()` в `engines/stt_whisper.py` подгружает их вручную — без этого всё
+работает до первой транскрипции и падает на `libcublas.so.12 is not found`.
+
+Голос Piper:
+
+```bash
+mkdir -p models/piper && cd models/piper
+base=https://huggingface.co/rhasspy/piper-voices/resolve/main/ru/ru_RU/irina/medium/ru_RU-irina-medium.onnx
+curl -LO "$base" && curl -LO "$base.json"
+```
+
+`llama.cpp` собирается один раз под **обе** карты (Pascal `61` + Turing `75`) —
+тогда бинарь одинаково идёт и на dev-машине, и в проде. Обязательно с **CUDA 12**:
+в CUDA 13 поддержка Pascal вырезана. В репозитории Ubuntu лежит подходящая 12.4:
+
+```bash
+sudo apt install nvidia-cuda-toolkit cmake g++-13
+git clone --depth 1 https://github.com/ggml-org/llama.cpp.git && cd llama.cpp
+cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="61;75" \
+      -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-13 -DLLAMA_CURL=OFF
+cmake --build build -j --target llama-server
+```
+
+`g++-13` здесь не прихоть: nvcc 12.4 отказывается работать с gcc новее 13-го, а на
+свежих Ubuntu системный уже 15.x. Системный компилятор при этом не трогаем.
+
+Модель:
+```bash
+mkdir -p models/llm && curl -L -o models/llm/Qwen3-4B-Q4_K_M.gguf \
+  https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf
+```
+
+Запуск (модель должна жить в VRAM постоянно — агент молчит часами, а повторная
+загрузка стоила бы 10+ с на первый ответ):
+
+```bash
+llama-server -m models/llm/Qwen3-4B-Q4_K_M.gguf -ngl 99 -c 4096 \
+             --host 127.0.0.1 --port 8080
+```
+
+На карте с 4 ГБ добавьте `-c 2048 --cache-type-k q8_0 --cache-type-v q8_0`.
+
+Веса (Whisper CT2, `.gguf`, голос Piper `.onnx` + `.onnx.json`) скачайте заранее —
+**в проде интернета нет**.
 
 ## Использование
 
@@ -123,6 +229,48 @@ python3 main.py run --live --device-rate 48000 ...
 вернётся с паузой — это норма); (2) держите вход на отдельном (не BT) микрофоне, иначе
 гарнитура уйдёт в режим HFP и звук выхода схлопнется до «телефонного».
 
+### Голосовой ответчик (этап 2)
+
+Сначала поднимите `llama-server` (см. установку), затем:
+
+```bash
+# на записи из эфира — «переданное» уходит в out.wav
+.venv/bin/python main.py run --in-file запись.mp3 --out-file out.wav --responder llm
+# вживую с микрофоном/наушниками, без рации
+.venv/bin/python main.py run --live --responder llm --threshold 0.0012
+# боевой режим
+.venv/bin/python main.py run --live --responder llm --ptt txdbreak --port /dev/ttyUSB0
+```
+
+Скажите «**Феечка**, как слышно?» → пауза на обдумывание → голосовой ответ. Фраза без
+позывного вне окна диалога остаётся без ответа — так и задумано.
+
+### Замер задержки (`bench`)
+
+Скорость известна только на том железе, где померена: dev-машина и прод расходятся
+в разы, особенно на Piper (он считает на CPU). Прогон идёт через настоящий конвейер:
+
+```bash
+.venv/bin/python main.py bench --in-file запись.mp3
+.venv/bin/python main.py bench --in-file запись.mp3 --profile fast --budget 10
+```
+
+Печатает разбивку по звеньям (STT / LLM / TTS), время на фразу и вердикт по бюджету.
+
+### Проверка позывного (`trigger-test`)
+
+Whisper коверкает имена собственные, поэтому позывной ищется **нечётко** — по склейкам
+соседних слов. Проверить подбор порога можно без моделей и без GPU:
+
+```bash
+python3 main.py trigger-test "феечка как слышно" "фея чка ответь" "привет всем"
+```
+```
+  СРАБОТАЛ  score=1.00  «феечка»     'феечка как слышно'
+  СРАБОТАЛ  score=0.91  «феячка»     'фея чка ответь'
+  молчим    score=0.36  «всемна»     'привет всем'
+```
+
 ### Тест PTT-линии (осциллографом)
 
 ```bash
@@ -152,6 +300,29 @@ python3 tools/break_test.py --port /dev/ttyUSB0 --on 0.5 --off 0.5
 Порог, hangtime и предел буфера переопределяются флагами `--threshold` / `--hangtime-ms` /
 `--max-utterance-ms`.
 
+Этап 2 (там же, `config.py`):
+
+| Параметр | Default | Смысл |
+|---|---|---|
+| `stt.model` | `large-v3` | модель faster-whisper (или путь к CT2-каталогу) |
+| `stt.compute_type` | `int8` | **не менять на float16** — Pascal его не тянет, а выход отличается |
+| `stt.vad_filter` | False | **не включать:** встроенный Silero VAD на узкой полосе рации вырезает почти всю речь, и Whisper галлюцинирует на остатке |
+| `stt.min_chars` | 3 | короче — считаем шумом щелчка PTT и молчим |
+| `stt.initial_prompt` | «…Позывной Феечка…» | подсказка Whisper: заметно улучшает распознавание позывного |
+| `llm.base_url` | `http://127.0.0.1:8080` | адрес llama-server |
+| `llm.max_tokens` | 80 | эфир занимать нельзя |
+| `llm.max_sentences` | 2 | страховка от многословия, режем после генерации |
+| `llm.no_think` | True | гасит `<think>…</think>` у Qwen3 |
+| `tts.voice` | `ru_RU-irina-medium.onnx` | голос Piper |
+| `tts.peak_dbfs` | -3.0 | уровень в эфир: от него зависит глубина модуляции |
+| `dialog.callsign` | `феечка` | позывной |
+| `dialog.match_threshold` | 0.75 | схожесть для срабатывания (см. `trigger-test`) |
+| `dialog.window_s` | 60 | сколько отвечаем без позывного после своего ответа |
+| `dialog.max_history` | 8 | реплик в контексте |
+
+Профили STT: `--profile prod` (large-v3), `fast` (small), `cpu` (small на CPU).
+Точечно: `--stt-model`, `--stt-device`, `--llm-url`, `--voice`, `--callsign`.
+
 ## Железо
 
 - **RX:** выход динамика (ext-spk) рации → line-in компьютера.
@@ -169,22 +340,36 @@ python3 tools/break_test.py --port /dev/ttyUSB0 --on 0.5 --off 0.5
 
 ```
 ai_radio/
-  config.py      # пороги, тайминги, устройства
-  audio_io.py    # FileSource (ffmpeg) + Wav/Null sink  — stdlib
+  config.py      # пороги, тайминги, устройства, модели, профили
+  audio_io.py    # FileSource (ffmpeg) + Wav/Null sink + resample/normalize — stdlib
   live_io.py     # MicSource + SpeakerSink (sounddevice)  — numpy импортируется локально
   vad.py         # energy VAD + метрики (RMS/dBFS)
   calibrate.py   # подбор порога по файлу/микрофону + гистограмма
   ptt.py         # DummyPtt + TxdBreakPtt (break на TX, инверсия)
-  responder.py   # Responder (шов для LLM) + ParrotResponder
-  repeater.py    # state machine (half-duplex, preroll/hangtime, пауза входа на TX)
-main.py          # CLI: calibrate | run [--live] | devices
+  responder.py   # Responder (шов) + ParrotResponder + LLMResponder
+  repeater.py    # state machine (half-duplex, preroll/hangtime, пауза входа на ответ+TX)
+  dialog.py      # нечёткий триггер по позывному + история и окно диалога — stdlib
+  textnorm.py    # чистка текста перед TTS (числа, латиница, разметка, <think>)
+  bench.py       # замер задержки по звеньям на реальной записи
+  engines/
+    base.py         # протоколы SttEngine / LlmEngine / TtsEngine
+    stt_whisper.py  # faster-whisper (int8)
+    llm_llamacpp.py # llama-server по HTTP (urllib, stdlib)
+    tts_piper.py    # Piper + ресемплинг и нормализация уровня
+main.py          # CLI: calibrate | run [--live] | bench | trigger-test | devices
 tools/
   break_test.py  # проверка PTT-линии осциллографом
 ```
 
+Тяжёлые библиотеки импортируются локально внутри движков, поэтому этап 1 (калибровка,
+parrot, PTT) продолжает работать на машине без faster-whisper и piper.
+
 ## Дорожная карта
 
-- **Этап 2 — LLM:** заменить `ParrotResponder` на `tts(llm(stt(utterance)))`. Остальной
-  конвейер (VAD, PTT, тайминги) не меняется — только реализация `Responder`.
+- **Преобразование голоса (RVC)** поверх Piper — встаёт декоратором на `TtsEngine`,
+  отдельным процессом (torch не должен пересекаться с CTranslate2 на общем cuDNN).
+  На Pascal считать в **fp32**: fp16 там идёт в 1/64 скорости.
+- Квитанция приёма («принял» в эфир до обдумывания) — если замеры на железе покажут,
+  что пауза ощущается как потеря связи.
 - Аппаратный сигнал приёма (COS) от рации через микроконтроллер — если понадобится
   отказаться от VAD в пользу точного детектора несущей.

@@ -15,6 +15,9 @@ env/
 /out.wav
 *.out.wav
 
+# Веса моделей (голоса Piper, GGUF, CT2) — качаются отдельно
+/models/
+
 # Редакторы / ОС
 .vscode/
 .idea/

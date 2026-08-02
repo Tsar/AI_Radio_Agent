@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Dict, List
 
 
 @dataclass
@@ -40,11 +41,103 @@ class PttConfig:
     invert: bool = True           # у нашего USB-UART сигнал инвертирован
 
 
+CALLSIGN = "феечка"
+
+# Whisper коверкает имена собственные, особенно на узкой полосе рации: точное
+# вхождение не годится, поэтому держим список вариантов + нечёткое сравнение.
+# «фея» сюда сознательно не входит: склейка соседних слов и так ловит «фея чка»
+# (0.91), а отдельное слово «фея» в чужой речи давало бы ложные срабатывания.
+CALLSIGN_VARIANTS = ["феечка", "феичка", "фечка", "фиечка", "феюшка"]
+
+SYSTEM_PROMPT = (
+    "Ты — Феечка, автоматическая радиостанция в эфире. "
+    "Отвечай кратко: одно-два коротких предложения. "
+    "Твой ответ читает вслух синтезатор речи, поэтому пиши только по-русски, "
+    "без списков, разметки, эмодзи, латиницы и ссылок. "
+    "Говори простыми фразами, как в радиосвязи."
+)
+
+
+@dataclass
+class SttConfig:
+    model: str = "large-v3"        # имя модели faster-whisper или путь к CT2-каталогу
+    device: str = "cuda"
+    compute_type: str = "int8"     # на Pascal FP16 идёт 1/64 скорости; int8 держим и на dev,
+                                   # чтобы качество совпадало с продом (квантование меняет выход)
+    language: str = "ru"
+    beam_size: int = 5
+    vad_filter: bool = False       # встроенный Silero VAD ВРЕДЕН на нашем сигнале: на узкой
+                                   # полосе рации он вырезает почти всю речь, и Whisper
+                                   # галлюцинирует на остатке (вплоть до пересказа
+                                   # initial_prompt). Фразу нам и так вырезал energy VAD.
+    no_speech_threshold: float = 0.6
+    log_prob_threshold: float = -1.0  # сегменты ниже — отбрасываем (типовой источник галлюцинаций)
+    min_chars: int = 3             # короче — считаем мусором и молчим
+    initial_prompt: str = "Радиосвязь. Позывной Феечка. Как слышно, приём."
+
+
+@dataclass
+class LlmConfig:
+    base_url: str = "http://127.0.0.1:8080"   # llama-server (OpenAI-совместимый /v1)
+    model: str = "local"
+    system_prompt: str = SYSTEM_PROMPT
+    max_tokens: int = 80           # эфир занимать нельзя: ответ должен быть коротким
+    max_sentences: int = 2         # страховка от многословия модели, режем после генерации
+    temperature: float = 0.7
+    timeout_s: float = 60.0
+    no_think: bool = True          # Qwen3 без этого генерит <think>…</think> — время и токены впустую
+
+
+@dataclass
+class TtsConfig:
+    voice: str = "ru_RU-irina-medium.onnx"   # путь к модели Piper (.onnx рядом с .onnx.json)
+    peak_dbfs: float = -3.0                  # уровень отдаваемого в эфир аудио
+    length_scale: "float | None" = None      # None — как в модели; >1 медленнее, <1 быстрее
+
+
+@dataclass
+class DialogConfig:
+    callsign: str = CALLSIGN
+    callsign_variants: List[str] = field(default_factory=lambda: list(CALLSIGN_VARIANTS))
+    match_threshold: float = 0.75  # схожесть слова с позывным (difflib), 1.0 — точное совпадение
+    window_s: float = 60.0         # после ответа столько отвечаем без позывного. Чем окно
+                                   # шире, тем выше шанс ответить на чужую передачу в общем
+                                   # канале; паузы внутри живого диалога — единицы секунд
+    max_history: int = 8           # реплик в контексте (считая свои)
+    end_phrases: List[str] = field(default_factory=lambda: ["отбой", "конец связи", "до связи"])
+
+
 @dataclass
 class Config:
     audio: AudioConfig = field(default_factory=AudioConfig)
     vad: VadConfig = field(default_factory=VadConfig)
     tx: TxConfig = field(default_factory=TxConfig)
     ptt: PttConfig = field(default_factory=PttConfig)
+    stt: SttConfig = field(default_factory=SttConfig)
+    llm: LlmConfig = field(default_factory=LlmConfig)
+    tts: TtsConfig = field(default_factory=TtsConfig)
+    dialog: DialogConfig = field(default_factory=DialogConfig)
     input_device: "int | str | None" = None
     output_device: "int | str | None" = None
+
+
+# Профили держим в пределах 8 ГБ VRAM: то, что проверено на dev-карте, обязано
+# пойти и в проде (там 10 ГБ), а не наоборот.
+PROFILES: Dict[str, Dict[str, str]] = {
+    "prod": {"model": "large-v3", "device": "cuda", "compute_type": "int8"},
+    "fast": {"model": "small", "device": "cuda", "compute_type": "int8"},
+    "cpu": {"model": "small", "device": "cpu", "compute_type": "int8"},
+}
+
+
+def apply_profile(cfg: Config, name: str) -> None:
+    """Профиль задаёт только параметры STT — модель LLM выбирается при запуске
+    llama-server, голос Piper одинаков везде."""
+    try:
+        preset = PROFILES[name]
+    except KeyError:
+        raise ValueError(
+            f"неизвестный профиль {name!r}; доступны: {', '.join(sorted(PROFILES))}") from None
+    cfg.stt.model = preset["model"]
+    cfg.stt.device = preset["device"]
+    cfg.stt.compute_type = preset["compute_type"]

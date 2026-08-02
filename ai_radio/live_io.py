@@ -100,13 +100,11 @@ class SpeakerSink:
     def play(self, samples: List[float]) -> None:
         import numpy as np
         import sounddevice as sd
+        from .audio_io import resample_linear
+        self.total_samples += len(samples)
+        if self.play_rate != self.work_rate:
+            samples = resample_linear(samples, self.work_rate, self.play_rate)
         audio = np.asarray(samples, dtype=np.float32)
-        self.total_samples += len(audio)
-        if self.play_rate != self.work_rate and len(audio) > 0:
-            n_out = int(round(len(audio) * self.play_rate / self.work_rate))
-            x_old = np.linspace(0.0, 1.0, num=len(audio), endpoint=False)
-            x_new = np.linspace(0.0, 1.0, num=n_out, endpoint=False)
-            audio = np.interp(x_new, x_old, audio).astype(np.float32)
         # latency="high" сглаживает output-underrun на чистой ALSA (ценой большей задержки)
         sd.play(audio, samplerate=self.play_rate, device=self.device, latency="high")
         sd.wait()

@@ -1,0 +1,22 @@
+# Этап 2 (STT → LLM → TTS). Ставится ОТДЕЛЬНО от requirements.txt: этап 1
+# (калибровка, parrot-репитер, PTT) обходится stdlib + numpy/sounddevice/pyserial,
+# и на машине без этих моделей продолжает работать как раньше.
+#
+# Ставить в venv на Python 3.10 (как в проде на Ubuntu 22.04):
+#   uv venv --python 3.10 .venv
+#   uv pip install -r requirements.txt -r requirements-ai.txt
+#
+# LLM ставится не отсюда: llama-server из llama.cpp, собранный с CUDA 12
+# (в CUDA 13 вырезана поддержка Pascal). См. README.
+#
+# espeak-ng системный НЕ нужен: piper-tts >= 1.6 несёт espeakbridge.so и
+# espeak-ng-data внутри пакета.
+faster-whisper
+piper-tts
+num2words
+
+# Для STT на видеокарте. CTranslate2 берёт их через dlopen, каталоги pip-пакетов
+# сам не находит — подгружаются в ai_radio/engines/stt_whisper.py:preload_cuda_libs().
+# Для профиля cpu не нужны (~1.3 ГБ).
+nvidia-cublas-cu12
+nvidia-cudnn-cu12
