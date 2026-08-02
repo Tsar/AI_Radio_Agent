@@ -126,47 +126,76 @@ CUDA toolkit в системе не нужен. Их каталоги не ле�
 `preload_cuda_libs()` в `engines/stt_whisper.py` подгружает их вручную — без этого всё
 работает до первой транскрипции и падает на `libcublas.so.12 is not found`.
 
-Голос Piper:
+Голос Piper (~63 МБ) — кладём в `models/piper/`, это путь по умолчанию в конфиге:
 
 ```bash
-mkdir -p models/piper && cd models/piper
-base=https://huggingface.co/rhasspy/piper-voices/resolve/main/ru/ru_RU/irina/medium/ru_RU-irina-medium.onnx
-curl -LO "$base" && curl -LO "$base.json"
+mkdir -p models/piper
+voice=https://huggingface.co/rhasspy/piper-voices/resolve/main/ru/ru_RU/irina/medium/ru_RU-irina-medium.onnx
+curl -L -o models/piper/ru_RU-irina-medium.onnx      "$voice"
+curl -L -o models/piper/ru_RU-irina-medium.onnx.json "$voice.json"
 ```
 
 `llama.cpp` собирается один раз под **обе** карты (Pascal `61` + Turing `75`) —
 тогда бинарь одинаково идёт и на dev-машине, и в проде. Обязательно с **CUDA 12**:
 в CUDA 13 поддержка Pascal вырезана. В репозитории Ubuntu лежит подходящая 12.4:
 
+Собирается **рядом с проектом**, не внутри него:
+
 ```bash
 sudo apt install nvidia-cuda-toolkit cmake g++-13
-git clone --depth 1 https://github.com/ggml-org/llama.cpp.git && cd llama.cpp
-cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="61;75" \
+git clone --depth 1 https://github.com/ggml-org/llama.cpp.git ../llama.cpp
+cmake -S ../llama.cpp -B ../llama.cpp/build -DGGML_CUDA=ON \
+      -DCMAKE_CUDA_ARCHITECTURES="61;75" \
       -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-13 -DLLAMA_CURL=OFF
-cmake --build build -j --target llama-server
+cmake --build ../llama.cpp/build -j --target llama-server
 ```
 
 `g++-13` здесь не прихоть: nvcc 12.4 отказывается работать с gcc новее 13-го, а на
 свежих Ubuntu системный уже 15.x. Системный компилятор при этом не трогаем.
 
-Модель:
+Проверить, что бинарь умеет обе карты (должны быть и `sm_61`, и `sm_75`):
+```bash
+cuobjdump --list-elf ../llama.cpp/build/bin/libggml-cuda.so | grep -oE "sm_[0-9]+" | sort -u
+```
+
+Модель (~2.5 ГБ):
 ```bash
 mkdir -p models/llm && curl -L -o models/llm/Qwen3-4B-Q4_K_M.gguf \
   https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf
 ```
 
-Запуск (модель должна жить в VRAM постоянно — агент молчит часами, а повторная
-загрузка стоила бы 10+ с на первый ответ):
+Запуск из корня проекта (бинарь **не в PATH** — путь указываем целиком). Модель должна
+жить в VRAM постоянно: агент молчит часами, а повторная загрузка стоила бы 10+ с на
+первый ответ:
 
 ```bash
-llama-server -m models/llm/Qwen3-4B-Q4_K_M.gguf -ngl 99 -c 4096 \
-             --host 127.0.0.1 --port 8080
+../llama.cpp/build/bin/llama-server -m models/llm/Qwen3-4B-Q4_K_M.gguf \
+    -ngl 99 -c 4096 --host 127.0.0.1 --port 8080
 ```
 
 На карте с 4 ГБ добавьте `-c 2048 --cache-type-k q8_0 --cache-type-v q8_0`.
 
-Веса (Whisper CT2, `.gguf`, голос Piper `.onnx` + `.onnx.json`) скачайте заранее —
-**в проде интернета нет**.
+### Перенос на машину без интернета
+
+Голос Piper и `.gguf` — просто файлы в `models/`, их достаточно скопировать. А вот
+**модель Whisper faster-whisper скачивает сам** при первом запуске (`large-v3` ≈ 2.9 ГБ,
+`small` ≈ 464 МБ) и кладёт в кэш HuggingFace. На даче интернета нет, поэтому либо
+копируем кэш целиком:
+
+```bash
+rsync -a ~/.cache/huggingface/hub/models--Systran--faster-whisper-large-v3 \
+         прод:~/.cache/huggingface/hub/
+```
+
+либо — надёжнее — забираем каталог со снапшотом и указываем путь явно:
+
+```bash
+ls -d ~/.cache/huggingface/hub/models--Systran--faster-whisper-large-v3/snapshots/*/
+# скопировать этот каталог (config.json, model.bin, tokenizer.json, vocabulary.txt)
+python3 main.py run --live --responder llm --stt-model /путь/к/снапшоту
+```
+
+Во втором случае `--stt-model` принимает каталог, и в сеть никто не ходит.
 
 ## Использование
 
@@ -231,7 +260,8 @@ python3 main.py run --live --device-rate 48000 ...
 
 ### Голосовой ответчик (этап 2)
 
-Сначала поднимите `llama-server` (см. установку), затем:
+Сначала в отдельном терминале поднимите `llama-server` (см. установку) — без него агент
+распознает фразу, но ответить не сможет и промолчит. Затем:
 
 ```bash
 # на записи из эфира — «переданное» уходит в out.wav
@@ -251,11 +281,20 @@ python3 main.py run --live --device-rate 48000 ...
 в разы, особенно на Piper (он считает на CPU). Прогон идёт через настоящий конвейер:
 
 ```bash
-.venv/bin/python main.py bench --in-file запись.mp3
+.venv/bin/python main.py bench --in-file запись.mp3 --threshold 0.004
 .venv/bin/python main.py bench --in-file запись.mp3 --profile fast --budget 10
 ```
 
 Печатает разбивку по звеньям (STT / LLM / TTS), время на фразу и вердикт по бюджету.
+Порог берите из `calibrate` для этой же записи — иначе VAD может не найти в ней фраз.
+
+Замер на dev-машине (RTX 2070 + Ryzen 9950X3D), профиль `prod`:
+
+```
+  #   приём   STT     LLM     TTS    итого   эфир  ответ
+  1    2.50    0.46    0.11    0.05    0.62    1.49   да
+  бюджет 10 с — укладываемся (худшая фраза 0.62 с)
+```
 
 ### Проверка позывного (`trigger-test`)
 
@@ -313,7 +352,7 @@ python3 tools/break_test.py --port /dev/ttyUSB0 --on 0.5 --off 0.5
 | `llm.max_tokens` | 80 | эфир занимать нельзя |
 | `llm.max_sentences` | 2 | страховка от многословия, режем после генерации |
 | `llm.no_think` | True | гасит `<think>…</think>` у Qwen3 |
-| `tts.voice` | `ru_RU-irina-medium.onnx` | голос Piper |
+| `tts.voice` | `models/piper/ru_RU-irina-medium.onnx` | голос Piper (.onnx + одноимённый .onnx.json) |
 | `tts.peak_dbfs` | -3.0 | уровень в эфир: от него зависит глубина модуляции |
 | `dialog.callsign` | `феечка` | позывной |
 | `dialog.match_threshold` | 0.75 | схожесть для срабатывания (см. `trigger-test`) |

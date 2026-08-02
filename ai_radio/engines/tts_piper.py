@@ -22,7 +22,13 @@ class PiperTts:
         from piper import PiperVoice  # тяжёлый импорт — только здесь
         self.cfg = cfg
         self.sample_rate = sample_rate
-        self.voice = PiperVoice.load(cfg.voice)
+        try:
+            self.voice = PiperVoice.load(cfg.voice)
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                f"голос Piper не найден: {cfg.voice} (нужны и .onnx, и .onnx.json). "
+                f"Скачайте его — команда есть в README — или укажите путь флагом --voice"
+            ) from exc
 
     def _voice_rate(self, default: int = 22050) -> int:
         config = getattr(self.voice, "config", None)

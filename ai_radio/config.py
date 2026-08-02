@@ -90,7 +90,9 @@ class LlmConfig:
 
 @dataclass
 class TtsConfig:
-    voice: str = "ru_RU-irina-medium.onnx"   # путь к модели Piper (.onnx рядом с .onnx.json)
+    # путь к модели Piper (.onnx, рядом должен лежать одноимённый .onnx.json) —
+    # по умолчанию туда, куда README велит её скачать
+    voice: str = "models/piper/ru_RU-irina-medium.onnx"
     peak_dbfs: float = -3.0                  # уровень отдаваемого в эфир аудио
     length_scale: "float | None" = None      # None — как в модели; >1 медленнее, <1 быстрее
 
