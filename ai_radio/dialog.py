@@ -67,6 +67,26 @@ class CallsignTrigger:
     def found(self, text: str) -> bool:
         return self.match(text)[0]
 
+    def strip_leading(self, text: str) -> str:
+        """Срезать позывной в начале ответа агента.
+
+        Промпт просит не представляться, но модели поменьше всё равно норовят —
+        в радиообмене позывной в начале передачи привычен, и они копируют стиль.
+        """
+        words = text.split()
+        if len(words) < 2:
+            return text          # ответ из одного слова не потрошим
+        first = normalize(words[0])
+        if not first:
+            return text
+        for variant in self.variants:
+            if SequenceMatcher(None, first, variant).ratio() >= self.threshold:
+                rest = " ".join(words[1:]).lstrip(" ,.:;—-")
+                if not rest:
+                    return text
+                return rest[0].upper() + rest[1:]
+        return text
+
 
 class DialogState:
     """История реплик + окно продолжения разговора."""

@@ -78,6 +78,7 @@ class LLMResponder:
             self.timings["llm"] = time.monotonic() - t0
 
         reply = clean_llm_reply(raw, max_sentences=self.cfg.llm.max_sentences)
+        reply = self.dialog.trigger.strip_leading(reply)
         if not reply:
             self.dialog.history.pop()
             print("[LLM] пустой ответ — молчим")
