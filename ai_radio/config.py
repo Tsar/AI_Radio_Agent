@@ -51,11 +51,34 @@ CALLSIGN_VARIANTS = ["феечка", "феичка", "фечка", "фиечка
 
 SYSTEM_PROMPT = (
     "Ты — Феечка, автоматическая радиостанция в эфире. "
-    "Отвечай кратко: одно-два коротких предложения. "
+    "{length} "
     "Твой ответ читает вслух синтезатор речи, поэтому пиши только по-русски, "
     "без списков, разметки, эмодзи, латиницы и ссылок. "
     "Говори простыми фразами, как в радиосвязи."
 )
+
+
+@dataclass
+class ReplyLength:
+    """Пресет длины ответа. Крутить эти три ручки порознь бессмысленно: промпт
+    определяет, сколько модель напишет, max_sentences режет лишнее, а max_tokens —
+    только предохранитель (он рубит по счётчику и может оборвать на полуслове)."""
+    max_tokens: int
+    max_sentences: int
+    hint: str          # подставляется в SYSTEM_PROMPT вместо {length}
+    air_s: str         # замер на Qwen3-4B: сколько такой ответ занимает эфира
+
+
+# Во время своей передачи агент глух, поэтому длина — это не только вопрос вкуса.
+REPLY_LENGTHS: Dict[str, ReplyLength] = {
+    "short": ReplyLength(
+        80, 2, "Отвечай кратко: одно-два коротких предложения.", "~6 с"),
+    "medium": ReplyLength(
+        200, 4, "Отвечай тремя-четырьмя предложениями.", "~11 с"),
+    "long": ReplyLength(
+        400, 8, "Отвечай развёрнуто, шестью-восемью предложениями.", "~35 с"),
+}
+DEFAULT_REPLY_LENGTH = "short"
 
 
 @dataclass
@@ -80,9 +103,12 @@ class SttConfig:
 class LlmConfig:
     base_url: str = "http://127.0.0.1:8080"   # llama-server (OpenAI-совместимый /v1)
     model: str = "local"
-    system_prompt: str = SYSTEM_PROMPT
-    max_tokens: int = 80           # эфир занимать нельзя: ответ должен быть коротким
-    max_sentences: int = 2         # страховка от многословия модели, режем после генерации
+    # длина ответа задаётся пресетом (--reply-length), а не тремя ручками порознь
+    reply_length: str = DEFAULT_REPLY_LENGTH
+    system_prompt: str = SYSTEM_PROMPT.format(
+        length=REPLY_LENGTHS[DEFAULT_REPLY_LENGTH].hint)
+    max_tokens: int = REPLY_LENGTHS[DEFAULT_REPLY_LENGTH].max_tokens
+    max_sentences: int = REPLY_LENGTHS[DEFAULT_REPLY_LENGTH].max_sentences
     temperature: float = 0.7
     timeout_s: float = 60.0
     no_think: bool = True          # Qwen3 без этого генерит <think>…</think> — время и токены впустую
@@ -143,3 +169,19 @@ def apply_profile(cfg: Config, name: str) -> None:
     cfg.stt.model = preset["model"]
     cfg.stt.device = preset["device"]
     cfg.stt.compute_type = preset["compute_type"]
+
+
+def apply_reply_length(cfg: Config, name: str) -> None:
+    """Переключить длину ответа одним пресетом: промпт, max_sentences и max_tokens
+    меняются согласованно. Перезаписывает system_prompt — если он правился руками,
+    правьте шаблон SYSTEM_PROMPT, а не поле конфига."""
+    try:
+        preset = REPLY_LENGTHS[name]
+    except KeyError:
+        raise ValueError(
+            f"неизвестная длина ответа {name!r}; доступны: "
+            f"{', '.join(REPLY_LENGTHS)}") from None
+    cfg.llm.reply_length = name
+    cfg.llm.max_tokens = preset.max_tokens
+    cfg.llm.max_sentences = preset.max_sentences
+    cfg.llm.system_prompt = SYSTEM_PROMPT.format(length=preset.hint)

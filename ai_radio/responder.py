@@ -109,5 +109,6 @@ def build_llm_responder(cfg: Config, check_llm: bool = True) -> LLMResponder:
               f"ответы работать не будут, пока он не поднят")
     else:
         print(f"[init] LLM: {cfg.llm.base_url}")
-    print(f"[init] позывной: {cfg.dialog.callsign}, окно диалога {cfg.dialog.window_s:.0f} с")
+    print(f"[init] позывной: {cfg.dialog.callsign}, окно диалога {cfg.dialog.window_s:.0f} с, "
+          f"ответы {cfg.llm.reply_length} (≤{cfg.llm.max_sentences} предл.)")
     return LLMResponder(cfg, stt, llm, tts)

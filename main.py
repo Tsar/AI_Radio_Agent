@@ -22,7 +22,7 @@ import argparse
 import sys
 
 from ai_radio.calibrate import calibrate_file, calibrate_live, print_report
-from ai_radio.config import PROFILES, Config, apply_profile
+from ai_radio.config import PROFILES, REPLY_LENGTHS, Config, apply_profile, apply_reply_length
 from ai_radio.ptt import make_ptt
 from ai_radio.repeater import Repeater
 from ai_radio.responder import ParrotResponder
@@ -43,6 +43,8 @@ def _apply_ai(cfg: Config, args: argparse.Namespace) -> None:
     """Профиль и точечные переопределения стека этапа 2."""
     if getattr(args, "profile", None):
         apply_profile(cfg, args.profile)
+    if getattr(args, "reply_length", None):
+        apply_reply_length(cfg, args.reply_length)
     if getattr(args, "stt_model", None):
         cfg.stt.model = args.stt_model
     if getattr(args, "stt_device", None):
@@ -175,6 +177,9 @@ def cmd_devices(args: argparse.Namespace) -> int:
 def _add_ai_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--profile", choices=sorted(PROFILES),
                    help="профиль STT: prod (large-v3) | fast (small) | cpu")
+    lengths = ", ".join(f"{n} ({p.air_s})" for n, p in REPLY_LENGTHS.items())
+    p.add_argument("--reply-length", choices=list(REPLY_LENGTHS),
+                   help=f"длина ответа в эфире: {lengths}. По умолчанию short")
     p.add_argument("--stt-model", help="модель faster-whisper (переопределяет профиль)")
     p.add_argument("--stt-device", choices=["cuda", "cpu"], help="где считать STT")
     p.add_argument("--llm-url", help="адрес llama-server (по умолчанию http://127.0.0.1:8080)")
