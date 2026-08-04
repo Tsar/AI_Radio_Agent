@@ -60,6 +60,9 @@ class LLMResponder:
             print("[--] отбой — диалог закрыт")
             return None
 
+        if self.dialog.expire_if_stale():
+            print("[..] прошлый разговор закрыт по таймауту — контекст очищен")
+
         answer, reason = self.dialog.should_answer(text)
         if not answer:
             print(f"[--] {reason} — молчим")

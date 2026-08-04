@@ -102,6 +102,18 @@ class DialogState:
         self.history.clear()
         self.last_reply_at = None
 
+    def expire_if_stale(self) -> bool:
+        """Окно закрылось — считаем прошлый разговор оконченным и чистим историю.
+
+        Иначе его реплики протекут в контекст следующего обращения: скажешь
+        позывной через час, а модель ответит так, будто разговор не прерывался.
+        Таймаут и явное «отбой» должны значить одно и то же.
+        """
+        if self.history and not self.window_open():
+            self.reset()
+            return True
+        return False
+
     def add_user(self, text: str) -> None:
         self.history.append({"role": "user", "content": text})
 

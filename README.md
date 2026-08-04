@@ -435,7 +435,7 @@ python3 tools/break_test.py --port /dev/ttyUSB0 --on 0.5 --off 0.5
 | `rvc.voice` | `voicevox_speaker_43` | целевой голос (`--rvc-voice`) |
 | `rvc.input_voice` | `irina` | поправка питча на входной голос; для irina она 0 |
 | `rvc.pitch` / `rvc.formant_shift` | None | None — пресет сервиса (+8 и +1.0) |
-| `dialog.window_s` | 60 | сколько отвечаем без позывного после своего ответа |
+| `dialog.window_s` | 60 | сколько отвечаем без позывного после своего ответа; по истечении история диалога очищается |
 | `dialog.max_history` | 8 | реплик в контексте |
 
 Профили STT: `--profile prod` (large-v3), `fast` (small), `cpu` (small на CPU).
