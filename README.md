@@ -57,8 +57,9 @@ utterance → Whisper → позывной? → LLM → нормализация
 Если агент не разобрал фразу, не услышал позывного или LLM недоступен — он **молчит**
 (`respond()` возвращает `None`, PTT не жмётся). Молчание здесь штатный исход.
 
-Для установки на прод-машину (ту, что уедет на дачу) есть отдельный чеклист —
-[DEPLOY.md](DEPLOY.md): автозапуск, проверка офлайн-готовности и диагностика.
+Готовые команды запуска (три процесса) — в [RUN.md](RUN.md). Для установки на
+прод-машину, ту, что уедет на дачу, есть отдельный чеклист — [DEPLOY.md](DEPLOY.md):
+автозапуск, проверка офлайн-готовности и диагностика.
 
 ## Требования
 
@@ -294,9 +295,9 @@ python3 main.py run --live --device-rate 48000 ...
 проектом, **своим venv на Python 3.10**:
 
 ```bash
-git clone -b offline-http-inference \
-    https://github.com/Tsar/Retrieval-based-Voice-Conversion-WebUI.git ../rvc
-cd ../rvc
+cd .. && git clone -b offline-http-inference \
+    https://github.com/Tsar/Retrieval-based-Voice-Conversion-WebUI.git
+cd Retrieval-based-Voice-Conversion-WebUI
 uv venv --python 3.10 .venv
 uv pip install -r requirements.txt
 # torch с PyPI приезжает под CUDA 13, где нет Pascal — берём сборку под CUDA 12:

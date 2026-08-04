@@ -197,8 +197,9 @@ Description=AI Radio — voice conversion (RVC)
 After=network.target
 
 [Service]
-WorkingDirectory=%h/rvc
-ExecStart=%h/rvc/.venv/bin/python infer-http-service.py --port 8081
+WorkingDirectory=%h/Retrieval-based-Voice-Conversion-WebUI
+ExecStart=%h/Retrieval-based-Voice-Conversion-WebUI/.venv/bin/python \
+          infer-http-service.py --port 8081
 Restart=always
 RestartSec=5
 
