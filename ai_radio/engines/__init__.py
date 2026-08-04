@@ -28,9 +28,13 @@ def make_llm(cfg) -> "LlmEngine":
     return LlamaServerLlm(cfg)
 
 
-def make_tts(cfg, sample_rate: int = 16000) -> "TtsEngine":
+def make_tts(cfg, sample_rate: int = 16000, rvc_cfg=None) -> "TtsEngine":
     from .tts_piper import PiperTts
     try:
-        return PiperTts(cfg, sample_rate=sample_rate)
+        tts: "TtsEngine" = PiperTts(cfg, sample_rate=sample_rate)
     except ImportError as exc:
         raise RuntimeError(f"piper-tts {_HINT} (плюс системный espeak-ng)") from exc
+    if rvc_cfg is not None and rvc_cfg.enabled:
+        from .tts_rvc import RvcVoice          # только stdlib, ставить нечего
+        tts = RvcVoice(tts, rvc_cfg, sample_rate=sample_rate)
+    return tts

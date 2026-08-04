@@ -101,7 +101,14 @@ def build_llm_responder(cfg: Config, check_llm: bool = True) -> LLMResponder:
     print(f"[init] STT: {cfg.stt.model} ({cfg.stt.device}, {cfg.stt.compute_type})…")
     stt = make_stt(cfg.stt, sample_rate=cfg.audio.sample_rate)
     print(f"[init] TTS: {cfg.tts.voice}…")
-    tts = make_tts(cfg.tts, sample_rate=cfg.audio.sample_rate)
+    tts = make_tts(cfg.tts, sample_rate=cfg.audio.sample_rate, rvc_cfg=cfg.rvc)
+    if cfg.rvc.enabled:
+        rvc_ping = getattr(tts, "ping", None)
+        if check_llm and callable(rvc_ping) and not rvc_ping():
+            print(f"[warn] RVC не отвечает по {cfg.rvc.base_url} — "
+                  f"будем передавать голосом Piper")
+        else:
+            print(f"[init] RVC: {cfg.rvc.voice} @ {cfg.rvc.base_url}")
     llm = make_llm(cfg.llm)
     ping = getattr(llm, "ping", None)
     if check_llm and callable(ping) and not ping():

@@ -53,6 +53,14 @@ def _apply_ai(cfg: Config, args: argparse.Namespace) -> None:
         cfg.llm.base_url = args.llm_url
     if getattr(args, "voice", None):
         cfg.tts.voice = args.voice
+    if getattr(args, "rvc", False):
+        cfg.rvc.enabled = True
+    if getattr(args, "rvc_url", None):
+        cfg.rvc.base_url = args.rvc_url
+    if getattr(args, "rvc_voice", None):
+        cfg.rvc.voice = args.rvc_voice
+    if getattr(args, "rvc_formant", None) is not None:
+        cfg.rvc.formant_shift = args.rvc_formant
     if getattr(args, "callsign", None):
         # свой позывной — свои варианты написания: дефолтные подобраны под «Феечку»
         cfg.dialog.callsign = args.callsign
@@ -185,6 +193,12 @@ def _add_ai_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--llm-url", help="адрес llama-server (по умолчанию http://127.0.0.1:8080)")
     p.add_argument("--voice", help="путь к голосу Piper (.onnx)")
     p.add_argument("--callsign", help="позывной агента (по умолчанию Феечка)")
+    p.add_argument("--rvc", action="store_true",
+                   help="переозвучивать ответ через RVC (нужен infer-http-service.py)")
+    p.add_argument("--rvc-voice", help="целевой голос RVC (по умолчанию voicevox_speaker_43)")
+    p.add_argument("--rvc-url", help="адрес RVC-сервиса (по умолчанию http://127.0.0.1:8081)")
+    p.add_argument("--rvc-formant", type=float,
+                   help="сдвиг формант (по умолчанию пресет сервиса)")
 
 
 def build_parser() -> argparse.ArgumentParser:

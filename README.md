@@ -18,7 +18,8 @@
 (**«Феечка»**) плюс окно продолжения диалога. Включается флагом `--responder llm`,
 parrot остаётся ответчиком по умолчанию.
 
-Дальше — преобразование голоса (RVC) поверх Piper.
+**Этап 3 — готов:** преобразование голоса (**RVC**) поверх Piper — флаг `--rvc`.
+Синтезированный ответ переозвучивается целевым голосом целиком, одним проходом.
 
 ## Как это работает
 
@@ -75,6 +76,7 @@ utterance → Whisper → позывной? → LLM → нормализация
 | STT | faster-whisper `large-v3`, **`compute_type=int8`** | устойчив к шуму и узкой полосе рации; на Pascal FP16 идёт в 1/64 скорости, а CTranslate2 требует для него cc ≥ 7.0 |
 | LLM | llama-server + Qwen3-4B `Q4_K_M` | отдельный процесс, модель постоянно в VRAM |
 | TTS | Piper `ru_RU-irina-medium` (CPU) | быстрый; разницу с тяжёлыми TTS всё равно срезает полоса 300–3400 Гц |
+| Голос | RVC `voicevox_speaker_43` (опционально) | тембр различим и в полосе рации, в отличие от «натуральности» TTS |
 
 `int8` держим **и на dev-машине**: квантование слегка меняет выход, иначе качество на
 тестах и в проде разойдётся. Профиль укладывается в ~4.6 ГБ VRAM.
@@ -275,6 +277,73 @@ python3 main.py run --live --device-rate 48000 ...
 Скажите «**Феечка**, как слышно?» → пауза на обдумывание → голосовой ответ. Фраза без
 позывного вне окна диалога остаётся без ответа — так и задумано.
 
+### Преобразование голоса (RVC, этап 3)
+
+Ответ синтезируется Piper'ом, а затем целиком переозвучивается целевым голосом. RVC
+живёт **отдельным процессом со своим venv**: ему нужны `numpy 1.23` и `fairseq`, а у нас
+`numpy 2.x` ради faster-whisper и piper — в одно окружение это не ставится. Схема та же,
+что с llama-server.
+
+#### Установка RVC-сервиса
+
+Сервис живёт в форке RVC — https://github.com/Tsar/Retrieval-based-Voice-Conversion-WebUI,
+ветка **`offline-http-inference`** (скрипт `infer-http-service.py`). Ставится рядом с
+проектом, **своим venv на Python 3.10**:
+
+```bash
+git clone -b offline-http-inference \
+    https://github.com/Tsar/Retrieval-based-Voice-Conversion-WebUI.git ../rvc
+cd ../rvc
+uv venv --python 3.10 .venv
+uv pip install -r requirements.txt
+# torch с PyPI приезжает под CUDA 13, где нет Pascal — берём сборку под CUDA 12:
+uv pip install --reinstall torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+# setuptools 81+ выпилил pkg_resources, без него не импортируются librosa и pyworld:
+uv pip install "setuptools<81"
+```
+
+Затем базовые модели (hubert и rmvpe) — их качает скрипт из репозитория:
+
+```bash
+.venv/bin/python tools/download_models.py
+```
+
+**Голосовые модели в git не хранятся** (`assets/weights/*` в `.gitignore`) — положите
+нужные `.pth` в `assets/weights/` вручную. Сервису нужны те, что перечислены в его
+`TARGET_VOICES`: `voicevox_speaker_43.pth`, `xiangling_eng_30_epochs_with_pitch.pth`,
+`citlali_jap.pth`.
+
+Запуск:
+
+```bash
+.venv/bin/python infer-http-service.py --port 8081
+```
+
+Затем агент запускается с `--rvc`:
+
+```bash
+.venv/bin/python main.py run --live --responder llm --rvc --threshold 0.0012
+```
+
+Голоса и их пресеты (`--rvc-voice`):
+
+| Голос | Транспонирование | Сдвиг формант |
+|---|---|---|
+| `voicevox_speaker_43` | +8 | +1.0 (по умолчанию) |
+| `xiangling_eng` | +12 | +1.0 |
+| `citlali_jap` | +6 | 0 |
+
+Транспонирование считается как `pitch - INPUT_VOICES_PITCH[input_voice]`, где для нашего
+Piper-голоса `irina` поправка нулевая (он примерно так же низок, как shimmer у OpenAI).
+
+**Сдвиг формант укорачивает фразу.** В реалтайм-версии RVC его дают бесплатно, попросив
+`net_g` сгенерировать больше фреймов, чем будет проиграно. Офлайн такой ручки нет, поэтому
+сдвиг делается ресемплингом готового аудио — и фраза становится короче на `1 - 1/2^(shift/12)`:
+около 6% при `+1.0`, 11% при `+2`, 16% при `+3`. Для эфира это скорее плюс — передача короче.
+
+Если сервис не поднят, агент **передаёт голосом Piper**, а не молчит: отказ косметического
+звена не должен стоить ответа. Предупреждение печатается один раз, а не на каждую фразу.
+
 ### Замер задержки (`bench`)
 
 Скорость известна только на том железе, где померена: dev-машина и прод расходятся
@@ -357,6 +426,11 @@ python3 tools/break_test.py --port /dev/ttyUSB0 --on 0.5 --off 0.5
 | `tts.peak_dbfs` | -3.0 | уровень в эфир: от него зависит глубина модуляции |
 | `dialog.callsign` | `феечка` | позывной |
 | `dialog.match_threshold` | 0.75 | схожесть для срабатывания (см. `trigger-test`) |
+| `rvc.enabled` | False | включается флагом `--rvc` |
+| `rvc.base_url` | `http://127.0.0.1:8081` | адрес RVC-сервиса |
+| `rvc.voice` | `voicevox_speaker_43` | целевой голос (`--rvc-voice`) |
+| `rvc.input_voice` | `irina` | поправка питча на входной голос; для irina она 0 |
+| `rvc.pitch` / `rvc.formant_shift` | None | None — пресет сервиса (+8 и +1.0) |
 | `dialog.window_s` | 60 | сколько отвечаем без позывного после своего ответа |
 | `dialog.max_history` | 8 | реплик в контексте |
 
@@ -421,6 +495,7 @@ ai_radio/
     stt_whisper.py  # faster-whisper (int8)
     llm_llamacpp.py # llama-server по HTTP (urllib, stdlib)
     tts_piper.py    # Piper + ресемплинг и нормализация уровня
+    tts_rvc.py      # RVC-декоратор над TtsEngine (HTTP, stdlib)
 main.py          # CLI: calibrate | run [--live] | bench | trigger-test | devices
 tools/
   break_test.py  # проверка PTT-линии осциллографом
@@ -431,9 +506,8 @@ parrot, PTT) продолжает работать на машине без fast
 
 ## Дорожная карта
 
-- **Преобразование голоса (RVC)** поверх Piper — встаёт декоратором на `TtsEngine`,
-  отдельным процессом (torch не должен пересекаться с CTranslate2 на общем cuDNN).
-  На Pascal считать в **fp32**: fp16 там идёт в 1/64 скорости.
+- Перенос на прод: там Pascal, и RVC пойдёт в **fp32** (fp16 на нём в 1/64 скорости).
+  Переключение автоматическое — `device_config` в RVC ловит P102-100 по имени карты.
 - Квитанция приёма («принял» в эфир до обдумывания) — если замеры на железе покажут,
   что пауза ощущается как потеря связи.
 - Аппаратный сигнал приёма (COS) от рации через микроконтроллер — если понадобится

@@ -124,6 +124,20 @@ class TtsConfig:
 
 
 @dataclass
+class RvcConfig:
+    """Преобразование голоса поверх Piper. Отдельный процесс: RVC нужен numpy 1.23
+    и fairseq, у нас numpy 2.x — в один venv не ставится."""
+    enabled: bool = False          # включается флагом --rvc
+    base_url: str = "http://127.0.0.1:8081"
+    voice: str = "voicevox_speaker_43"
+    input_voice: str = "irina"     # поправка питча на входной голос; irina ≈ shimmer (0)
+    pitch: "int | None" = None     # None — пресет сервиса (для voicevox_speaker_43 это +8)
+    formant_shift: "float | None" = None   # None — пресет сервиса (1.0)
+    peak_dbfs: float = -3.0        # RVC меняет уровень, нормализуем перед эфиром
+    timeout_s: float = 60.0
+
+
+@dataclass
 class DialogConfig:
     callsign: str = CALLSIGN
     callsign_variants: List[str] = field(default_factory=lambda: list(CALLSIGN_VARIANTS))
@@ -144,6 +158,7 @@ class Config:
     stt: SttConfig = field(default_factory=SttConfig)
     llm: LlmConfig = field(default_factory=LlmConfig)
     tts: TtsConfig = field(default_factory=TtsConfig)
+    rvc: RvcConfig = field(default_factory=RvcConfig)
     dialog: DialogConfig = field(default_factory=DialogConfig)
     input_device: "int | str | None" = None
     output_device: "int | str | None" = None
