@@ -358,10 +358,9 @@ After=network.target
 
 [Service]
 WorkingDirectory=%h/AI_Radio_Agent
-# Первым — сам каталог с бинарём: RUNPATH указывает на путь сборочной машины,
-# и соседние libllama*.so / libggml*.so иначе не находятся. Дальше CUDA-библиотеки
-# из venv агента: системного toolkit на проде нет.
-Environment=LD_LIBRARY_PATH=%h/llama.cpp/build/bin:%h/AI_Radio_Agent/.venv/lib/python3.10/site-packages/nvidia/cublas/lib:%h/AI_Radio_Agent/.venv/lib/python3.10/site-packages/nvidia/cuda_runtime/lib
+# Только CUDA: системного toolkit на проде нет, библиотеки берём из venv агента.
+# Соседние libllama*.so / libggml*.so сюда не нужны — RUNPATH собран с $ORIGIN.
+Environment=LD_LIBRARY_PATH=%h/AI_Radio_Agent/.venv/lib/python3.10/site-packages/nvidia/cublas/lib:%h/AI_Radio_Agent/.venv/lib/python3.10/site-packages/nvidia/cuda_runtime/lib
 # -c 2048 + KV q8_0, а не -c 4096: в 5 ГБ иначе не влезает (см. раздел 8) —
 # 3100 МБ на llama-server + 1231 на turbo + 592 на RVC это уже 4.9 ГБ до
 # накладных расходов драйвера. На домашней машине можно и -c 4096.
@@ -469,8 +468,32 @@ Piper. Так что при перезапуске одного из серви�
 | RVC fp32 с `f0_method=pm` | 592 МБ |
 | RVC fp32 с `f0_method=rmvpe` | 926 МБ |
 
-**Дачная машина (5 ГБ):** turbo + 4B + RVC(pm) = **3.9 ГБ**, запас ~1.2 ГБ. Полная
-`large-v3` вместо turbo уже не влезает (5.3 ГБ), `rmvpe` вместо `pm` — впритык.
+**Замер на самой дачной машине (P2000, fp32, всё поднято одновременно):**
+
+| Процесс | VRAM |
+|---|---|
+| `llama-server`, ctx 2048, KV `q8_0` | 2674 МиБ |
+| Whisper `large-v3-turbo` в агенте | 1126 МиБ |
+| RVC, `f0_method=pm`, **fp32** | **942 МиБ** |
+| GNOME на той же карте | 277 МиБ |
+| **итого** | **5019 МиБ из 5120** |
+
+Так стек **не работает**: RVC падает с `torch.OutOfMemoryError` на первой же
+конвертации, не сумев выделить 42 МиБ. Агент при этом не ломается — передаёт голосом
+Piper, — но RVC не работает вовсе.
+
+Два уточнения к цифрам выше, обе не в нашу пользу. **RVC в fp32 берёт 942 МиБ, а не
+592**: 592 — это замер fp16 с dev-машины, а на Pascal fp16 неприменим (см. `--fp32`).
+И **десктоп надо считать**: 277 МиБ уходят на GNOME, потому что монитор висит на
+P2000 — встроенная Intel HD 2000 в BIOS OptiPlex отключена. Отсюда headless как
+обязательный шаг, а не как гигиена: без него не хватает.
+
+Даже headless запас остаётся тонким — около 380 МиБ. Если упрётся снова: сначала
+`Environment=PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` в юните RVC (борется
+с фрагментацией), потом RVC на процессор (`Environment=CUDA_VISIBLE_DEVICES=`) —
+освобождает всю его долю ценой заметно более долгой конвертации.
+
+Полная `large-v3` вместо turbo не влезает тем более, `rmvpe` вместо `pm` — тоже.
 
 **Домашняя (10 ГБ):** влезает `--profile vram10` с `large-v3` (4.7 ГБ), остаётся место
 и под модель LLM покрупнее — например Qwen3-8B Q4_K_M вместо 4B.
