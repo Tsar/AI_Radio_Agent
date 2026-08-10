@@ -12,10 +12,24 @@ Piper синтезирует на своей частоте (обычно 22050 
 """
 from __future__ import annotations
 
+import os
 from typing import List, Tuple
 
 from ..audio_io import normalize_peak, pcm16_to_floats, resample_linear
 from ..config import TtsConfig
+
+# Корень проекта: .../ai_radio/engines/tts_piper.py -> ../../..
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _resolve_voice(path: str) -> str:
+    """Дефолт `models/piper/…` — путь относительный, и запуск из другого каталога
+    ронял синтез на «голос не найден». Ищем ещё и относительно корня проекта:
+    голос лежит там, а не там, откуда позвали."""
+    if os.path.isabs(path) or os.path.exists(path):
+        return path
+    candidate = os.path.join(_ROOT, path)
+    return candidate if os.path.exists(candidate) else path
 
 
 class PiperTts:
@@ -23,8 +37,9 @@ class PiperTts:
         from piper import PiperVoice  # тяжёлый импорт — только здесь
         self.cfg = cfg
         self.sample_rate = sample_rate
+        voice_path = _resolve_voice(cfg.voice)
         try:
-            self.voice = PiperVoice.load(cfg.voice)
+            self.voice = PiperVoice.load(voice_path)
         except FileNotFoundError as exc:
             raise RuntimeError(
                 f"голос Piper не найден: {cfg.voice} (нужны и .onnx, и .onnx.json). "
