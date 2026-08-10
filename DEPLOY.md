@@ -73,18 +73,45 @@
    cmake -S ~/llama.cpp -B ~/llama.cpp/build-sandy -DGGML_CUDA=ON \
          -DCMAKE_CUDA_ARCHITECTURES=61 \
          -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-13 -DLLAMA_CURL=OFF \
-         -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF
+         -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF \
+         -DGGML_F16C=OFF -DGGML_BMI2=OFF
    cmake --build ~/llama.cpp/build-sandy -j --target llama-server
    rsync -a ~/llama.cpp/build-sandy/bin/ прод:~/llama.cpp/build/bin/
+   ```
+   **`-DGGML_BMI2=OFF` обязателен**, хотя его нет в списке «AVX2/FMA/F16C»: cmake
+   включает `-mbmi2` независимо от них, а BMI2 появился только в Haswell — на Sandy
+   Bridge был бы тот же SIGILL, просто на других инструкциях. Правильная строка в
+   выводе cmake выглядит так (без `bmi2`):
+   ```
+   -- Adding CPU backend variant ggml-cpu: -msse4.2;-mavx GGML_SSE42;GGML_AVX
+   ```
+   Проверить готовый бинарь, не доверяя флагам, — все три счётчика должны быть по нулю:
+   ```bash
+   objdump -d build-sandy/bin/libggml-cpu.so | grep -cE 'vfmadd|vfnmadd'          # FMA
+   objdump -d build-sandy/bin/libggml-cpu.so | grep -cE 'vpbroadcast|vperm2i128'  # AVX2
+   objdump -d build-sandy/bin/libggml-cpu.so | grep -cE '\b(pdep|pext|mulx|bzhi)\b'  # BMI2
    ```
    `61` вместо `61;75`: обе прод-машины на Pascal, Turing нужен только самой dev-машине.
    Готовых linux+CUDA бинарей у llama.cpp нет — CUDA-сборки публикуют только под Windows.
 
-   CUDA линкуется **динамически**, а `nvidia-cuda-toolkit` на прод ставить незачем:
-   `libcublas.so.12` уже приезжает pip-пакетом в venv агента, `libcudart.so.12`
-   добирается оттуда же (`pip install nvidia-cuda-runtime-cu12`, ~1 МБ). Проверить —
-   `ldd build/bin/llama-server`; при нехватке подставить каталоги через
-   `Environment=LD_LIBRARY_PATH=…` в юните. Альтернатива — собрать с `-DGGML_STATIC=ON`.
+   CUDA линкуется **динамически**, а `nvidia-cuda-toolkit` на прод ставить незачем —
+   всё нужное приезжает pip-пакетами в venv агента. Нужны три библиотеки, и `ldd`
+   показывает именно их:
+
+   | Библиотека | Откуда |
+   |---|---|
+   | `libcublas.so.12` | `nvidia-cublas-cu12` (уже стоит ради faster-whisper) |
+   | `libcublasLt.so.12` | оттуда же, тем же пакетом |
+   | `libcudart.so.12` | `pip install nvidia-cuda-runtime-cu12` (~9 МБ) |
+
+   Каталоги подставляются переменной окружения — проверено, что с ней все три
+   резолвятся из venv, а не из системы:
+   ```bash
+   NV=~/AI_Radio_Agent/.venv/lib/python3.10/site-packages/nvidia
+   LD_LIBRARY_PATH="$NV/cublas/lib:$NV/cuda_runtime/lib" ldd build/bin/libggml-cuda.so \
+     | grep -E 'cublas|cudart'
+   ```
+   В юните это `Environment=LD_LIBRARY_PATH=…`. Альтернатива — собрать с `-DGGML_STATIC=ON`.
 3. **RVC-сервис** — форк, ветка `offline-http-inference`, свой venv на Python 3.10.
    Команды в README (не забыть `torch` из индекса `cu121` и `setuptools<81`). Если
    ставите обычным `pip`, а не `uv`, — сначала `pip install "pip<24.1"`, иначе
@@ -262,6 +289,8 @@ After=network.target
 
 [Service]
 WorkingDirectory=%h/AI_Radio_Agent
+# CUDA-библиотеки берём из venv агента: системного toolkit на проде нет
+Environment=LD_LIBRARY_PATH=%h/AI_Radio_Agent/.venv/lib/python3.10/site-packages/nvidia/cublas/lib:%h/AI_Radio_Agent/.venv/lib/python3.10/site-packages/nvidia/cuda_runtime/lib
 # -c 2048 + KV q8_0, а не -c 4096: в 5 ГБ иначе не влезает (см. раздел 8) —
 # 3100 МБ на llama-server + 1231 на turbo + 592 на RVC это уже 4.9 ГБ до
 # накладных расходов драйвера. На домашней машине можно и -c 4096.
@@ -346,7 +375,8 @@ Piper. Так что при перезапуске одного из серви�
 | Первый ответ после долгой тишины идёт 10+ с | модель выгрузилась из VRAM — проверить, что `llama-server` не перезапускался |
 | Речь в эфире тихая или перемодулированная | аттенюатор, `tts.peak_dbfs`, уровень line-out в микшере |
 | `CUDA failed with error out of memory` на дачной машине | в 5 ГБ P2000 стек влезает только с `--profile vram5` (turbo) и `rvc.f0_method=pm`; проверить, что не включён `vram10` или `rmvpe`, а у `llama-server` стоит `-c 2048` с KV `q8_0`, а не `-c 4096` |
-| `llama-server` падает с `Illegal instruction` (SIGILL) | бинарь собран с `GGML_NATIVE=ON` под dev-процессор. i7-2600 — Sandy Bridge, без AVX2/FMA/F16C. Пересобрать, как в шаге 1.2 |
+| `llama-server` падает с `Illegal instruction` (SIGILL) | бинарь собран под чужой процессор. i7-2600 — Sandy Bridge: нет AVX2, FMA, F16C **и BMI2**. Пересобрать, как в шаге 1.2, и проверить `objdump`-ом |
+| `llama-server` не стартует: `libcudart.so.12: cannot open shared object file` | не установлен `nvidia-cuda-runtime-cu12` либо не задан `LD_LIBRARY_PATH` на каталоги `nvidia/*/lib` в venv агента |
 | `llama-server` не стартует: `libcudart.so.12: cannot open shared object file` | llama.cpp линкует CUDA динамически. `ldd build/bin/llama-server` покажет недостающее; добрать pip-колёсами (`nvidia-cuda-runtime-cu12`) и прописать `LD_LIBRARY_PATH` в юните |
 | RVC отвечает, но конвертация идёт десятки секунд | сервис поднялся в fp16. На `Quadro P2000` авто-детект Pascal не срабатывает — нужен `--fp32`. Проверить `curl -s 127.0.0.1:8081/health`: должно быть `"is_half": false` |
 | `ResolutionImpossible` / `omegaconf` при установке RVC | pip 24.1+ отбрасывает колёса omegaconf 2.0.x из-за битых метаданных. `pip install "pip<24.1"` и повторить |
