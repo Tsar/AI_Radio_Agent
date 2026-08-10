@@ -40,6 +40,7 @@ class RvcVoice:
         params = [
             f"voice={self.cfg.voice}",
             f"input_voice={self.cfg.input_voice}",
+            f"f0_method={self.cfg.f0_method}",
             f"resample_sr={self.sample_rate}",   # просим сразу рабочую частоту
         ]
         if self.cfg.pitch is not None:

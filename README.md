@@ -77,13 +77,13 @@ utterance → Whisper → позывной? → LLM → нормализация
 
 | Звено | Что используем | Почему |
 |---|---|---|
-| STT | faster-whisper `large-v3`, **`compute_type=int8`** | устойчив к шуму и узкой полосе рации; на Pascal FP16 идёт в 1/64 скорости, а CTranslate2 требует для него cc ≥ 7.0 |
+| STT | faster-whisper `large-v3-turbo`, **`compute_type=int8`** | устойчив к шуму и узкой полосе рации; на Pascal FP16 идёт в 1/64 скорости, а CTranslate2 требует для него cc ≥ 7.0 |
 | LLM | llama-server + Qwen3-4B `Q4_K_M` | отдельный процесс, модель постоянно в VRAM |
 | TTS | Piper `ru_RU-irina-medium` (CPU) | быстрый; разницу с тяжёлыми TTS всё равно срезает полоса 300–3400 Гц |
 | Голос | RVC `voicevox_speaker_43` (опционально) | тембр различим и в полосе рации, в отличие от «натуральности» TTS |
 
 `int8` держим **и на dev-машине**: квантование слегка меняет выход, иначе качество на
-тестах и в проде разойдётся. Профиль укладывается в ~4.6 ГБ VRAM.
+тестах и в проде разойдётся. Весь стек (STT + LLM + RVC) укладывается в **3.9 ГБ VRAM**.
 
 Две настройки, проверенные на реальной записи с Optim-778 и на имитации тракта
 (Piper → полоса 300–3400 Гц → шум), обе неочевидные:
@@ -184,12 +184,12 @@ mkdir -p models/llm && curl -L -o models/llm/Qwen3-4B-Q4_K_M.gguf \
 ### Перенос на машину без интернета
 
 Голос Piper и `.gguf` — просто файлы в `models/`, их достаточно скопировать. А вот
-**модель Whisper faster-whisper скачивает сам** при первом запуске (`large-v3` ≈ 2.9 ГБ,
-`small` ≈ 464 МБ) и кладёт в кэш HuggingFace. На даче интернета нет, поэтому либо
-копируем кэш целиком:
+**модель Whisper faster-whisper скачивает сам** при первом запуске
+(`large-v3-turbo` ≈ 1.6 ГБ, `large-v3` ≈ 2.9 ГБ, `small` ≈ 464 МБ) и кладёт в кэш
+HuggingFace. На даче интернета нет, поэтому либо копируем кэш целиком:
 
 ```bash
-rsync -a ~/.cache/huggingface/hub/models--Systran--faster-whisper-large-v3 \
+rsync -a ~/.cache/huggingface/hub/models--Systran--faster-whisper-large-v3-turbo \
          прод:~/.cache/huggingface/hub/
 ```
 
@@ -416,7 +416,7 @@ python3 tools/break_test.py --port /dev/ttyUSB0 --on 0.5 --off 0.5
 
 | Параметр | Default | Смысл |
 |---|---|---|
-| `stt.model` | `large-v3` | модель faster-whisper (или путь к CT2-каталогу) |
+| `stt.model` | `large-v3-turbo` | модель faster-whisper (или путь к CT2-каталогу) |
 | `stt.compute_type` | `int8` | **не менять на float16** — Pascal его не тянет, а выход отличается |
 | `stt.vad_filter` | False | **не включать:** встроенный Silero VAD на узкой полосе рации вырезает почти всю речь, и Whisper галлюцинирует на остатке |
 | `stt.min_chars` | 3 | короче — считаем шумом щелчка PTT и молчим |
@@ -435,10 +435,22 @@ python3 tools/break_test.py --port /dev/ttyUSB0 --on 0.5 --off 0.5
 | `rvc.voice` | `voicevox_speaker_43` | целевой голос (`--rvc-voice`) |
 | `rvc.input_voice` | `irina` | поправка питча на входной голос; для irina она 0 |
 | `rvc.pitch` / `rvc.formant_shift` | None | None — пресет сервиса (+8 и +1.0) |
+| `rvc.f0_method` | `pm` | экстрактор F0 на CPU; `rmvpe` точнее, но держит ~335 МБ VRAM, а на входе у RVC чистый синтез — на слух не отличить |
 | `dialog.window_s` | 60 | сколько отвечаем без позывного после своего ответа; по истечении история диалога очищается |
 | `dialog.max_history` | 8 | реплик в контексте |
 
-Профили STT: `--profile prod` (large-v3), `fast` (small), `cpu` (small на CPU).
+Профили STT подбираются под видеопамять машины (замеры пика, int8, на RTX 2070):
+
+| Профиль | Модель | VRAM | Для чего |
+|---|---|---|---|
+| `prod` | `large-v3-turbo` | 1231 МБ | дачная машина, Quadro P2000 (5 ГБ) |
+| `home` | `large-v3` | 2027 МБ | домашний сервер, P102-100 (10 ГБ) |
+| `fast` | `small` | 465 МБ | быстрые итерации при отладке |
+| `cpu` | `small` на CPU | — | машина без видеокарты |
+
+`medium` намеренно отсутствует: он тяжелее turbo (1074 МБ) и на нашем материале
+распознаёт хуже, чем `small`. Качество turbo на тестовой записи с рации не отличается
+от полной `large-v3`, при вдвое меньшей памяти.
 Точечно: `--stt-model`, `--stt-device`, `--llm-url`, `--voice`, `--callsign`.
 
 ### Длина ответа

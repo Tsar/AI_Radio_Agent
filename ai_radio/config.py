@@ -133,6 +133,10 @@ class RvcConfig:
     input_voice: str = "irina"     # поправка питча на входной голос; irina ≈ shimmer (0)
     pitch: "int | None" = None     # None — пресет сервиса (для voicevox_speaker_43 это +8)
     formant_shift: "float | None" = None   # None — пресет сервиса (1.0)
+    # pm вместо rmvpe: на входе у RVC чистый синтез Piper, а не шумный эфир, поэтому
+    # нейросетевой экстрактор F0 не нужен — на слух не отличить, а 335 МБ VRAM
+    # освобождаются. На P2000 (5 ГБ) без этого не хватает места под turbo + 4B.
+    f0_method: str = "pm"
     peak_dbfs: float = -3.0        # RVC меняет уровень, нормализуем перед эфиром
     timeout_s: float = 60.0
 
@@ -164,10 +168,14 @@ class Config:
     output_device: "int | str | None" = None
 
 
-# Профили держим в пределах 8 ГБ VRAM: то, что проверено на dev-карте, обязано
-# пойти и в проде (там 10 ГБ), а не наоборот.
+# Профиль подбирается под видеопамять машины. Замеры (пик, int8, на RTX 2070):
+#   small 465 МБ | large-v3-turbo 1231 МБ | medium 1074 МБ | large-v3 2027 МБ
+# medium не используем: он тяжелее turbo и на нашем материале распознаёт хуже small.
 PROFILES: Dict[str, Dict[str, str]] = {
-    "prod": {"model": "large-v3", "device": "cuda", "compute_type": "int8"},
+    # дачная машина, Quadro P2000 (5 ГБ): turbo + Qwen3-4B + RVC ≈ 4.5 ГБ
+    "prod": {"model": "large-v3-turbo", "device": "cuda", "compute_type": "int8"},
+    # домашний сервер, P102-100 (10 ГБ): места хватает на полную large-v3
+    "home": {"model": "large-v3", "device": "cuda", "compute_type": "int8"},
     "fast": {"model": "small", "device": "cuda", "compute_type": "int8"},
     "cpu": {"model": "small", "device": "cpu", "compute_type": "int8"},
 }
