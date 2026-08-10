@@ -408,6 +408,27 @@ main.py devices                                    # только pulse и defau
 Изменение группы подхватывается новым входом — проще перелогиниться или
 перезагрузиться, `systemctl --user restart pipewire` тут не поможет.
 
+**И наоборот: PulseAudio с PipeWire у этого пользователя надо погасить.** Агент ходит
+в карту напрямую через ALSA (`--in-device` по имени), а звуковой сервер, если он
+запущен, открывает карту первым и держит её. Признак — `arecord -l` показывает
+`Подустройства: 0/1` вместо `1/1`, и `main.py devices` просто не перечисляет карту:
+PortAudio пропускает устройства, которые не может открыть. На Ubuntu 22.04 у
+пользователя по умолчанию включены **оба** сервера сразу, и они ещё и мешают друг
+другу — PipeWire остаётся с нулём устройств, а карты забирает PulseAudio.
+
+```bash
+systemctl --user mask --now pulseaudio.socket pulseaudio.service \
+    pipewire.socket pipewire.service pipewire-media-session.service
+printf 'autospawn = no\ndaemon-binary = /bin/true\n' > ~/.config/pulse/client.conf
+```
+
+`mask`, а не `disable`: сокет иначе поднимет сервис по первому обращению, а
+`autospawn = no` закрывает последнюю лазейку — libpulse запускает демон сам.
+Обратно — `systemctl --user unmask` тем же списком.
+
+Отсюда же и `After=`/`Wants=` в юните агента: там **нет** `pipewire.service`, и это
+намеренно — ссылка на замаскированный юнит только вводила бы в заблуждение.
+
 Юниты ставятся **тому пользователю, под кем крутится агент**: `systemctl --user`
 смотрит на свой `$XDG_RUNTIME_DIR`, и юниты, положенные другому, просто не увидятся.
 Графическая сессия при этом не нужна и вредна — лишний PipeWire делил бы ту же
@@ -472,9 +493,10 @@ WantedBy=default.target
 ```ini
 [Unit]
 Description=AI Radio — agent
-# pipewire — потому что звук агент берёт через него
-After=ai-radio-llm.service ai-radio-rvc.service pipewire.service
-Wants=ai-radio-llm.service ai-radio-rvc.service pipewire.service
+# Звуковых серверов в зависимостях нет намеренно: карта берётся напрямую
+# через ALSA, а PulseAudio и PipeWire у этого пользователя замаскированы
+After=ai-radio-llm.service ai-radio-rvc.service
+Wants=ai-radio-llm.service ai-radio-rvc.service
 
 [Service]
 WorkingDirectory=%h/AI_Radio_Agent
