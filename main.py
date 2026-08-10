@@ -22,7 +22,8 @@ import argparse
 import sys
 
 from ai_radio.calibrate import calibrate_file, calibrate_live, print_report
-from ai_radio.config import PROFILES, REPLY_LENGTHS, Config, apply_profile, apply_reply_length
+from ai_radio.config import (DEFAULT_PROFILE, PROFILES, REPLY_LENGTHS, Config, apply_profile,
+                             apply_reply_length)
 from ai_radio.ptt import make_ptt
 from ai_radio.repeater import Repeater
 from ai_radio.responder import ParrotResponder
@@ -41,8 +42,9 @@ def _apply_common(cfg: Config, args: argparse.Namespace) -> None:
 
 def _apply_ai(cfg: Config, args: argparse.Namespace) -> None:
     """Профиль и точечные переопределения стека этапа 2."""
-    if getattr(args, "profile", None):
-        apply_profile(cfg, args.profile)
+    # Профиль применяем всегда: без флага берём DEFAULT_PROFILE, а не дефолт
+    # SttConfig.model. Точечные --stt-model/--stt-device ниже всё равно перекрывают.
+    apply_profile(cfg, getattr(args, "profile", None) or DEFAULT_PROFILE)
     if getattr(args, "reply_length", None):
         apply_reply_length(cfg, args.reply_length)
     if getattr(args, "stt_model", None):
@@ -183,8 +185,11 @@ def cmd_devices(args: argparse.Namespace) -> int:
 
 
 def _add_ai_args(p: argparse.ArgumentParser) -> None:
+    # Подсказку собираем из самих PROFILES — переименование профилей её не рассинхронит
+    profiles = " | ".join(f"{n} ({p['model']} на {p['device']})"
+                          for n, p in sorted(PROFILES.items()))
     p.add_argument("--profile", choices=sorted(PROFILES),
-                   help="профиль STT: prod (large-v3) | fast (small) | cpu")
+                   help=f"профиль STT: {profiles}. По умолчанию {DEFAULT_PROFILE}")
     lengths = ", ".join(f"{n} ({p.air_s})" for n, p in REPLY_LENGTHS.items())
     p.add_argument("--reply-length", choices=list(REPLY_LENGTHS),
                    help=f"длина ответа в эфире: {lengths}. По умолчанию short")

@@ -179,7 +179,10 @@ mkdir -p models/llm && curl -L -o models/llm/Qwen3-4B-Q4_K_M.gguf \
     -ngl 99 -c 4096 --host 127.0.0.1 --port 8080
 ```
 
-На карте с 4 ГБ добавьте `-c 2048 --cache-type-k q8_0 --cache-type-v q8_0`.
+`-c 4096` стоит 3.1 ГБ VRAM. Если карта 5 ГБ или меньше — а это и дачная P2000, и
+любая dev-машина, где на той же карте висит монитор, — добавьте
+`-c 2048 --cache-type-k q8_0 --cache-type-v q8_0` и уложитесь в 2.7 ГБ. Контекста
+хватает: в истории диалога максимум 8 коротких реплик.
 
 ### Перенос на машину без интернета
 
@@ -189,15 +192,24 @@ mkdir -p models/llm && curl -L -o models/llm/Qwen3-4B-Q4_K_M.gguf \
 HuggingFace. На даче интернета нет, поэтому либо копируем кэш целиком:
 
 ```bash
-rsync -a ~/.cache/huggingface/hub/models--Systran--faster-whisper-large-v3-turbo \
+rsync -a ~/.cache/huggingface/hub/models--mobiuslabsgmbh--faster-whisper-large-v3-turbo \
          прод:~/.cache/huggingface/hub/
+```
+
+**Имя каталога зависит от модели, и у turbo оно не «Systran».** faster-whisper
+резолвит имена через свою таблицу `_MODELS`, и `large-v3-turbo` ведёт на
+`mobiuslabsgmbh/faster-whisper-large-v3-turbo`, тогда как `large-v3` и `small` — на
+`Systran/…`. Не угадывайте каталог, спросите библиотеку:
+
+```bash
+.venv/bin/python -c "from faster_whisper.utils import _MODELS; print(_MODELS['large-v3-turbo'])"
 ```
 
 либо — надёжнее — забираем каталог со снапшотом и указываем путь явно:
 
 ```bash
-ls -d ~/.cache/huggingface/hub/models--Systran--faster-whisper-large-v3/snapshots/*/
-# скопировать этот каталог (config.json, model.bin, tokenizer.json, vocabulary.txt)
+.venv/bin/python -c "from faster_whisper.utils import download_model as d; print(d('large-v3-turbo'))"
+# скопировать этот каталог (config.json, model.bin, tokenizer.json, vocabulary.json)
 python3 main.py run --live --responder llm --stt-model /путь/к/снапшоту
 ```
 
@@ -306,10 +318,33 @@ uv pip install --reinstall torch torchaudio --index-url https://download.pytorch
 uv pip install "setuptools<81"
 ```
 
+Если ставите **не через `uv`, а обычным `python3 -m venv` + `pip`** (на Ubuntu 22.04
+системный Python уже 3.10, так что соблазн есть), сначала откатите pip:
+
+```bash
+.venv/bin/pip install "pip<24.1"
+```
+
+`fairseq 0.12.2` тянет `omegaconf<2.1`, а у колёс omegaconf 2.0.5/2.0.6 в метаданных
+`PyYAML (>=5.1.*)` — pip 24.1+ считает это невалидным, отбрасывает обе версии и падает
+с `ResolutionImpossible`. `uv` к таким метаданным терпимее, поэтому на dev-машине это
+не всплывает.
+
 Затем базовые модели (hubert и rmvpe) — их качает скрипт из репозитория:
 
 ```bash
 .venv/bin/python tools/download_models.py
+```
+
+Скрипт заодно тянет `assets/pretrained/` и `pretrained_v2/` — это 2.4 ГБ базовых
+моделей **для обучения**, инференсу они не нужны. Если место на счету, возьмите
+только те два файла, что реально грузятся:
+
+```bash
+L=https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main
+mkdir -p assets/hubert assets/rmvpe
+curl -L -o assets/hubert/hubert_base.pt "$L/hubert_base.pt"   # 181 МБ
+curl -L -o assets/rmvpe/rmvpe.pt        "$L/rmvpe.pt"         # 173 МБ
 ```
 
 **Голосовые модели в git не хранятся** (`assets/weights/*` в `.gitignore`) — положите
@@ -323,7 +358,12 @@ uv pip install "setuptools<81"
 .venv/bin/python infer-http-service.py --port 8081
 ```
 
-Затем агент запускается с `--rvc`:
+**На Quadro P2000 нужен явный `--fp32`.** Авто-детект в `configs/config.py:device_config()`
+ищет в имени карты подстроки `16` / `P40` / `P10` / `1060` / `1070` / `1080`. `P102-100`
+попадает под «P10», а `Quadro P2000` — ни под одну, и `is_half` останется `True`. На
+Pascal это fp16 в 1/64 скорости, то есть сервис формально работает, а ответ не
+укладывается ни в какой бюджет. Проверить можно по `/health`: там должно быть
+`"is_half": false`.
 
 ```bash
 .venv/bin/python main.py run --live --responder llm --rvc --threshold 0.0012
@@ -448,9 +488,10 @@ python3 tools/break_test.py --port /dev/ttyUSB0 --on 0.5 --off 0.5
 | `small` | `small` | 465 МБ | быстрые итерации при отладке |
 | `cpu` | `small` на CPU | — | машина без видеокарты |
 
-`medium` намеренно отсутствует: он тяжелее turbo (1074 МБ) и на нашем материале
-распознаёт хуже, чем `small`. Качество turbo на тестовой записи с рации не отличается
-от полной `large-v3`, при вдвое меньшей памяти.
+По умолчанию (без флага `--profile`) применяется **`vram5`** — самый скромный по памяти
+из боевых. `medium` намеренно отсутствует: он тяжелее turbo (1074 МБ) и на нашем
+материале распознаёт хуже, чем `small`. Качество turbo на тестовой записи с рации не
+отличается от полной `large-v3`, при вдвое меньшей памяти.
 Точечно: `--stt-model`, `--stt-device`, `--llm-url`, `--voice`, `--callsign`.
 
 ### Длина ответа
@@ -523,7 +564,9 @@ parrot, PTT) продолжает работать на машине без fast
 ## Дорожная карта
 
 - Перенос на прод: там Pascal, и RVC пойдёт в **fp32** (fp16 на нём в 1/64 скорости).
-  Переключение автоматическое — `device_config` в RVC ловит P102-100 по имени карты.
+  Автоматически это ловится только на домашней машине: `device_config` узнаёт
+  P102-100 по подстроке «P10». `Quadro P2000` под его список не подходит, там нужен
+  явный `--fp32` — см. «Установка RVC-сервиса».
 - Квитанция приёма («принял» в эфир до обдумывания) — если замеры на железе покажут,
   что пауза ощущается как потеря связи.
 - Аппаратный сигнал приёма (COS) от рации через микроконтроллер — если понадобится

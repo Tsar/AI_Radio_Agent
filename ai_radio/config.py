@@ -83,7 +83,8 @@ DEFAULT_REPLY_LENGTH = "short"
 
 @dataclass
 class SttConfig:
-    model: str = "large-v3"        # имя модели faster-whisper или путь к CT2-каталогу
+    model: str = "large-v3-turbo"  # имя модели faster-whisper или путь к CT2-каталогу;
+                                   # держать в согласии с PROFILES[DEFAULT_PROFILE]
     device: str = "cuda"
     compute_type: str = "int8"     # на Pascal FP16 идёт 1/64 скорости; int8 держим и на dev,
                                    # чтобы качество совпадало с продом (квантование меняет выход)
@@ -182,6 +183,10 @@ PROFILES: Dict[str, Dict[str, str]] = {
     "small": {"model": "small", "device": "cuda", "compute_type": "int8"},
     "cpu": {"model": "small", "device": "cpu", "compute_type": "int8"},
 }
+# Профиль по умолчанию применяется и без флага --profile: раньше он был объявлен,
+# но не использовался, и команда без флага молча брала дефолт SttConfig.model.
+# На 5 ГБ это разница между turbo (1231 МБ) и large-v3 (2027 МБ) — то есть между
+# рабочим стеком и «CUDA out of memory» на первой же транскрипции.
 DEFAULT_PROFILE = "vram5"
 
 
