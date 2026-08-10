@@ -465,27 +465,50 @@ RestartSec=5
 WantedBy=default.target
 ```
 
-`~/.config/systemd/user/ai-radio-agent.service` — ждёт, пока поднимутся оба:
+`~/.config/systemd/user/ai-radio-agent.service` — ждёт, пока поднимутся оба.
+Порог, профиль и остальные флаги вынесены в файл окружения: калибровка и переход
+на боевой PTT не должны требовать правки юнита.
 
 ```ini
 [Unit]
 Description=AI Radio — agent
-After=ai-radio-llm.service ai-radio-rvc.service sound.target
-Wants=ai-radio-llm.service ai-radio-rvc.service
+# pipewire — потому что звук агент берёт через него
+After=ai-radio-llm.service ai-radio-rvc.service pipewire.service
+Wants=ai-radio-llm.service ai-radio-rvc.service pipewire.service
 
 [Service]
 WorkingDirectory=%h/AI_Radio_Agent
+EnvironmentFile=%h/.config/ai-radio/agent.env
 ExecStartPre=/usr/bin/curl -s --retry 60 --retry-delay 2 --retry-connrefused \
              --retry-all-errors -o /dev/null http://127.0.0.1:8080/health
 ExecStart=%h/AI_Radio_Agent/.venv/bin/python -u main.py run --live --responder llm --rvc \
-          --profile vram5 --device-rate 48000 --threshold ПОРОГ \
-          --ptt txdbreak --port /dev/ttyUSB0
+          --profile ${PROFILE} --threshold ${THRESHOLD} --reply-length ${REPLY_LENGTH} \
+          $EXTRA_ARGS
 Restart=always
 RestartSec=10
 
 [Install]
 WantedBy=default.target
 ```
+
+`~/.config/ai-radio/agent.env`:
+
+```ini
+THRESHOLD=0.0012        # снять своим calibrate, значение здесь — только ориентир
+PROFILE=vram5
+REPLY_LENGTH=short
+EXTRA_ARGS=             # пусто — PTT заглушка и звук через PipeWire по умолчанию
+```
+
+Боевой режим — дописать в `EXTRA_ARGS`: `--ptt txdbreak --port /dev/ttyUSB0`, плюс
+`--device-rate 48000`, если работаете с картой напрямую, мимо PipeWire.
+
+**`$EXTRA_ARGS` systemd режет по пробелам, и кавычки этому не мешают.** Имя
+устройства из двух слов развалится на два аргумента, поэтому в `--in-device`
+писать одно слово: подстроку имени (`Rx`, `Live`) или индекс из `main.py devices`.
+Разница именно в записи: `${PROFILE}` подставляется одним аргументом, `$EXTRA_ARGS`
+разбивается — на то и рассчитано, иначе туда нельзя было бы положить несколько
+флагов сразу.
 
 ```bash
 systemctl --user daemon-reload

@@ -120,6 +120,23 @@ else
     bad "Whisper полез бы в сеть — модели нет в кэше"
 fi
 
+head_ "6. Звук виден агенту"
+# Доступ к /dev/snd раздаёт logind — ACL'ом пользователю за монитором. Агент за
+# монитором не сидит, ему нужна группа audio, иначе pipewire работает, но пуст.
+if id -nG | tr ' ' '\n' | grep -qx audio; then
+    ok "пользователь в группе audio"
+else
+    bad "пользователь не в группе audio — звука не будет (sudo usermod -aG audio \$USER)"
+fi
+# Строка активного устройства помечена «*» перед индексом — учитываем это в обоих
+# выражениях, иначе default проскочит мимо фильтра и посчитается за железо
+DEVS=$(.venv/bin/python main.py devices 2>/dev/null \
+       | grep -viE "^ *\*? *[0-9]+ +(pulse|default)," | grep -cE "^ *\*? *[0-9]+ +")
+.venv/bin/python main.py devices 2>/dev/null | sed 's/^/     /'
+[ "${DEVS:-0}" -gt 0 ] \
+    && ok "видно железо: устройств кроме pulse/default — ${DEVS}" \
+    || bad "кроме pulse/default ничего нет — карты агенту недоступны"
+
 head_ "ИТОГ"
 if [ ${#FAILS[@]} -eq 0 ]; then
     printf '  \033[32mВсё сошлось.\033[0m\n'
