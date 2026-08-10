@@ -27,9 +27,12 @@
   карты подстроки `16` / `P40` / `P10` / `1060` / `1070` / `1080`. `P102-100` попадает
   под «P10», а `Quadro P2000` — ни под одну, и `is_half` останется `True`. Запускать
   сервис с `--fp32`, проверять по `/health`, что там `"is_half": false`.
-- **i7-2600 — Sandy Bridge: есть AVX, нет AVX2/FMA/F16C.** Бинарь llama.cpp, собранный
-  на dev-машине с дефолтным `GGML_NATIVE=ON` (то есть `-march=native`), здесь падает с
-  SIGILL. Как собирать — ниже, в шаге 2.
+- **i7-2600 — Sandy Bridge: есть AVX, нет AVX2/FMA/F16C/BMI2.** Бинарь llama.cpp,
+  собранный на dev-машине с дефолтным `GGML_NATIVE=ON` (то есть `-march=native`),
+  здесь падает с SIGILL.
+- **Ubuntu 22.04 — это glibc 2.35 и GLIBCXX 3.4.30**, заметно старше, чем на
+  dev-машине. Бинарь, собранный там даже с правильными флагами, не запустится.
+  Оба ограничения снимаются одной сборкой в контейнере — шаг 1.2.
 - Встроенная Intel HD 2000 в BIOS отключена (в `lspci` её нет), так что монитор
   висит на P2000 и десктоп забирает VRAM. Отсюда headless: `systemctl set-default
   multi-user.target`, агент под `systemd --user` с `loginctl enable-linger`.
@@ -65,19 +68,35 @@
    .venv/bin/pip install -r requirements.txt -r requirements-ai.txt
    ```
 2. **llama.cpp** — не собирать на i7-2600 (займёт часы), но и не копировать рабочий
-   dev-билд: он собран с дефолтным `GGML_NATIVE=ON`, то есть под `-march=native`
-   dev-процессора, и на Sandy Bridge даст SIGILL. Пересобрать на dev **отдельным**
-   каталогом под базовый набор инструкций и скопировать уже его:
+   dev-билд: он собран под `-march=native` dev-процессора (на Sandy Bridge это SIGILL)
+   и против её же libc. Оба ограничения снимает сборка **в контейнере с целевой
+   Ubuntu**: считает по-прежнему dev-машина, то есть быстро, а ABI и набор инструкций
+   получаются продовые.
    ```bash
-   # на dev-машине
-   cmake -S ~/llama.cpp -B ~/llama.cpp/build-sandy -DGGML_CUDA=ON \
-         -DCMAKE_CUDA_ARCHITECTURES=61 \
-         -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-13 -DLLAMA_CURL=OFF \
-         -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF \
-         -DGGML_F16C=OFF -DGGML_BMI2=OFF
-   cmake --build ~/llama.cpp/build-sandy -j --target llama-server
-   rsync -a ~/llama.cpp/build-sandy/bin/ прод:~/llama.cpp/build/bin/
+   # на dev-машине. Образ 20.04 даёт бинарь, который пойдёт и на домашней (20.04),
+   # и на дачной (22.04): вниз по версиям glibc совместимость работает, вверх — нет
+   docker run --rm -v ~/llama.cpp:/src -w /src \
+       nvidia/cuda:12.4.1-devel-ubuntu20.04 bash -c '
+     apt-get update && apt-get install -y cmake git &&
+     cmake -S . -B build-prod -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=61 \
+           -DLLAMA_CURL=OFF -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=OFF \
+           -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF &&
+     cmake --build build-prod -j --target llama-server'
+   rsync -a ~/llama.cpp/build-prod/bin/ прод:~/llama.cpp/build/bin/
    ```
+   `-DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-13` в контейнере не нужен: там gcc 9,
+   а упирается nvcc 12.4 только в gcc новее 13-го.
+
+   **Правильных флагов мало — важна ещё libc.** Сборка теми же флагами, но прямо на
+   dev-машине, даёт бинарь, который на проде не стартует вовсе:
+   ```
+   version `GLIBC_2.38' not found       # на Ubuntu 22.04 стоит 2.35
+   version `GLIBCXX_3.4.32' not found   # есть только 3.4.30
+   version `CXXABI_1.3.15' not found    # есть только 1.3.13
+   ```
+   Флагами компилятора это не лечится, и glibc на 22.04 не обновить — отсюда контейнер.
+   Симметрично и обратное: собранное под 20.04 идёт на 22.04, но не наоборот.
+
    **`-DGGML_BMI2=OFF` обязателен**, хотя его нет в списке «AVX2/FMA/F16C»: cmake
    включает `-mbmi2` независимо от них, а BMI2 появился только в Haswell — на Sandy
    Bridge был бы тот же SIGILL, просто на других инструкциях. Правильная строка в
@@ -87,12 +106,22 @@
    ```
    Проверить готовый бинарь, не доверяя флагам, — все три счётчика должны быть по нулю:
    ```bash
-   objdump -d build-sandy/bin/libggml-cpu.so | grep -cE 'vfmadd|vfnmadd'          # FMA
-   objdump -d build-sandy/bin/libggml-cpu.so | grep -cE 'vpbroadcast|vperm2i128'  # AVX2
-   objdump -d build-sandy/bin/libggml-cpu.so | grep -cE '\b(pdep|pext|mulx|bzhi)\b'  # BMI2
+   objdump -d build-prod/bin/libggml-cpu.so | grep -cE 'vfmadd|vfnmadd'          # FMA
+   objdump -d build-prod/bin/libggml-cpu.so | grep -cE 'vpbroadcast|vperm2i128'  # AVX2
+   objdump -d build-prod/bin/libggml-cpu.so | grep -cE '\b(pdep|pext|mulx|bzhi)\b'  # BMI2
+   ```
+   А заодно ABI — на **прод-машине**, после копирования; строк быть не должно:
+   ```bash
+   ldd ~/llama.cpp/build/bin/llama-server | grep -E "not found|GLIBC|GLIBCXX|CXXABI"
    ```
    `61` вместо `61;75`: обе прод-машины на Pascal, Turing нужен только самой dev-машине.
    Готовых linux+CUDA бинарей у llama.cpp нет — CUDA-сборки публикуют только под Windows.
+
+   **RUNPATH тоже уедет вместе с бинарём.** cmake прописывает в него абсолютный путь
+   сборочного каталога (`/mnt/…/llama.cpp/build-prod/bin`), которого на проде нет, и
+   лежащие рядом `libllama*.so` / `libggml*.so` не находятся — при том что они прямо
+   в том же каталоге. Поэтому в `LD_LIBRARY_PATH` юнита каталог с бинарём идёт
+   **первым**, до CUDA-путей (см. раздел 6).
 
    CUDA линкуется **динамически**, а `nvidia-cuda-toolkit` на прод ставить незачем —
    всё нужное приезжает pip-пакетами в venv агента. Нужны три библиотеки, и `ldd`
@@ -289,8 +318,10 @@ After=network.target
 
 [Service]
 WorkingDirectory=%h/AI_Radio_Agent
-# CUDA-библиотеки берём из venv агента: системного toolkit на проде нет
-Environment=LD_LIBRARY_PATH=%h/AI_Radio_Agent/.venv/lib/python3.10/site-packages/nvidia/cublas/lib:%h/AI_Radio_Agent/.venv/lib/python3.10/site-packages/nvidia/cuda_runtime/lib
+# Первым — сам каталог с бинарём: RUNPATH указывает на путь сборочной машины,
+# и соседние libllama*.so / libggml*.so иначе не находятся. Дальше CUDA-библиотеки
+# из venv агента: системного toolkit на проде нет.
+Environment=LD_LIBRARY_PATH=%h/llama.cpp/build/bin:%h/AI_Radio_Agent/.venv/lib/python3.10/site-packages/nvidia/cublas/lib:%h/AI_Radio_Agent/.venv/lib/python3.10/site-packages/nvidia/cuda_runtime/lib
 # -c 2048 + KV q8_0, а не -c 4096: в 5 ГБ иначе не влезает (см. раздел 8) —
 # 3100 МБ на llama-server + 1231 на turbo + 592 на RVC это уже 4.9 ГБ до
 # накладных расходов драйвера. На домашней машине можно и -c 4096.
@@ -377,7 +408,8 @@ Piper. Так что при перезапуске одного из серви�
 | `CUDA failed with error out of memory` на дачной машине | в 5 ГБ P2000 стек влезает только с `--profile vram5` (turbo) и `rvc.f0_method=pm`; проверить, что не включён `vram10` или `rmvpe`, а у `llama-server` стоит `-c 2048` с KV `q8_0`, а не `-c 4096` |
 | `llama-server` падает с `Illegal instruction` (SIGILL) | бинарь собран под чужой процессор. i7-2600 — Sandy Bridge: нет AVX2, FMA, F16C **и BMI2**. Пересобрать, как в шаге 1.2, и проверить `objdump`-ом |
 | `llama-server` не стартует: `libcudart.so.12: cannot open shared object file` | не установлен `nvidia-cuda-runtime-cu12` либо не задан `LD_LIBRARY_PATH` на каталоги `nvidia/*/lib` в venv агента |
-| `llama-server` не стартует: `libcudart.so.12: cannot open shared object file` | llama.cpp линкует CUDA динамически. `ldd build/bin/llama-server` покажет недостающее; добрать pip-колёсами (`nvidia-cuda-runtime-cu12`) и прописать `LD_LIBRARY_PATH` в юните |
+| `llama-server` не стартует: `libllama-server-impl.so: cannot open shared object file` | файл лежит рядом с бинарём, но RUNPATH ведёт на каталог сборочной машины. Добавить `%h/llama.cpp/build/bin` первым в `LD_LIBRARY_PATH` |
+| `version 'GLIBC_2.38' not found` / `GLIBCXX_3.4.32` / `CXXABI_1.3.15` | бинарь собран против более новой libc, чем на проде. Флагами компилятора не лечится — пересобрать в контейнере с целевой Ubuntu, см. шаг 1.2 |
 | RVC отвечает, но конвертация идёт десятки секунд | сервис поднялся в fp16. На `Quadro P2000` авто-детект Pascal не срабатывает — нужен `--fp32`. Проверить `curl -s 127.0.0.1:8081/health`: должно быть `"is_half": false` |
 | `ResolutionImpossible` / `omegaconf` при установке RVC | pip 24.1+ отбрасывает колёса omegaconf 2.0.x из-за битых метаданных. `pip install "pip<24.1"` и повторить |
 | Whisper лезет в сеть на даче, хотя кэш «на месте» | каталог кэша для turbo — `models--mobiuslabsgmbh--…`, а не `Systran`. Проверять путём, который отдаёт сама библиотека (см. раздел 2) |
