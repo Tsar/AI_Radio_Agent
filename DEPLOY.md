@@ -488,10 +488,29 @@ Piper, — но RVC не работает вовсе.
 P2000 — встроенная Intel HD 2000 в BIOS OptiPlex отключена. Отсюда headless как
 обязательный шаг, а не как гигиена: без него не хватает.
 
-Даже headless запас остаётся тонким — около 380 МиБ. Если упрётся снова: сначала
-`Environment=PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` в юните RVC (борется
-с фрагментацией), потом RVC на процессор (`Environment=CUDA_VISIBLE_DEVICES=`) —
-освобождает всю его долю ценой заметно более долгой конвертации.
+**`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` для RVC отыгрывает ~230 МиБ** и
+нужен в любом случае: с ним пик RVC 720–744 МиБ вместо 942–972. Ставится drop-in'ом,
+чтобы не трогать сам юнит:
+
+```bash
+mkdir -p ~/.config/systemd/user/ai-radio-rvc.service.d
+cat > ~/.config/systemd/user/ai-radio-rvc.service.d/vram.conf <<'EOF'
+[Service]
+Environment=PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+EOF
+systemctl --user daemon-reload && systemctl --user restart ai-radio-rvc
+```
+
+Но **одного его мало**: с живым десктопом стек всё равно падает, не сумев выделить
+68 МиБ. Нужны оба — и drop-in, и headless; вместе они дают около 325 МиБ запаса.
+
+Полезное свойство: **пик RVC не растёт с длиной фразы** — замер на 3.5, 6.9, 13.8 и
+20.9 с дал одинаковые 680–720 МиБ, сервис режет вход на куски. То есть длинные ответы
+(`--reply-length medium`) память не ломают, они стоят только времени: конвертация идёт
+примерно 0.3–0.45 от длительности фразы.
+
+Если и этого не хватит — RVC целиком на процессор, `Environment=CUDA_VISIBLE_DEVICES=`
+в том же drop-in: освобождает всю его долю ценой заметно более долгой конвертации.
 
 Полная `large-v3` вместо turbo не влезает тем более, `rmvpe` вместо `pm` — тоже.
 
