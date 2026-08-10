@@ -555,7 +555,9 @@ ai_radio/
     tts_rvc.py      # RVC-декоратор над TtsEngine (HTTP, stdlib)
 main.py          # CLI: calibrate | run [--live] | bench | trigger-test | devices
 tools/
-  break_test.py  # проверка PTT-линии осциллографом
+  break_test.py       # проверка PTT-линии осциллографом
+  rvc_warmup.py       # прогрев RVC при старте сервиса (ExecStartPost в юните)
+  headless_check.sh   # автономная проверка стека на прод-машине, без сети
 ```
 
 Тяжёлые библиотеки импортируются локально внутри движков, поэтому этап 1 (калибровка,
