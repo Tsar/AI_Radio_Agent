@@ -15,7 +15,7 @@
 | ОС | Ubuntu 22.04, Python 3.10 | **Ubuntu 20.04, Python 3.8** |
 | Диск свободно | ~30 ГБ | ~59 ГБ |
 | Звук | Sound Blaster Live! 5.1 | — |
-| Профиль STT | **`--profile prod`** (turbo) | **`--profile home`** (large-v3) |
+| Профиль STT | **`--profile vram5`** (turbo) | **`--profile vram10`** (large-v3) |
 
 Обе на Pascal, поэтому CUDA 12 и fp32 в RVC актуальны для обеих.
 
@@ -111,14 +111,14 @@
 
 ```bash
 # 1) прогнать полный конвейер, чтобы всё догрузилось в кэш
-.venv/bin/python main.py bench --in-file запись.mp3 --profile prod --threshold ПОРОГ
+.venv/bin/python main.py bench --in-file запись.mp3 --profile vram5 --threshold ПОРОГ
 
 # 2) убедиться, что модель Whisper осела на диске
 du -sh ~/.cache/huggingface/hub/models--Systran--faster-whisper-large-v3-turbo
 
 # 3) отключить сеть и прогнать ещё раз — это и есть проверка
 sudo ip link set <интерфейс> down
-.venv/bin/python main.py bench --in-file запись.mp3 --profile prod --threshold ПОРОГ
+.venv/bin/python main.py bench --in-file запись.mp3 --profile vram5 --threshold ПОРОГ
 sudo ip link set <интерфейс> up
 ```
 
@@ -180,7 +180,7 @@ Sound Blaster Live! работает на 48 кГц, поэтому всем к�
 Каждый шаг — только после успешного предыдущего.
 
 1. `main.py trigger-test "феечка приём" "привет всем"` — без моделей, мгновенно
-2. `main.py bench --in-file запись.mp3 --profile prod --threshold ПОРОГ` — реальные
+2. `main.py bench --in-file запись.mp3 --profile vram5 --threshold ПОРОГ` — реальные
    времена на этом железе. Ожидание для дачи: **~2 с** на фразу (на dev-машине с
    тем же профилем вышло 0.93 с, P2000 примерно вдвое медленнее 2070, плюс Piper
    на i7-2600 без AVX2). Бюджет 10 с.
@@ -251,7 +251,7 @@ WorkingDirectory=%h/AI_Radio_Agent
 ExecStartPre=/usr/bin/curl -s --retry 60 --retry-delay 2 --retry-connrefused \
              --retry-all-errors -o /dev/null http://127.0.0.1:8080/health
 ExecStart=%h/AI_Radio_Agent/.venv/bin/python -u main.py run --live --responder llm --rvc \
-          --profile prod --device-rate 48000 --threshold ПОРОГ \
+          --profile vram5 --device-rate 48000 --threshold ПОРОГ \
           --ptt txdbreak --port /dev/ttyUSB0
 Restart=always
 RestartSec=10
@@ -288,7 +288,7 @@ Piper. Так что при перезапуске одного из серви�
 | Ответ звучит голосом Piper вместо RVC | RVC-сервис лежит, в логе есть `[warn] RVC недоступен` |
 | Первый ответ после долгой тишины идёт 10+ с | модель выгрузилась из VRAM — проверить, что `llama-server` не перезапускался |
 | Речь в эфире тихая или перемодулированная | аттенюатор, `tts.peak_dbfs`, уровень line-out в микшере |
-| `CUDA failed with error out of memory` на дачной машине | в 5 ГБ P2000 стек влезает только с `--profile prod` (turbo) и `rvc.f0_method=pm`; проверить, что не включён `home` или `rmvpe` |
+| `CUDA failed with error out of memory` на дачной машине | в 5 ГБ P2000 стек влезает только с `--profile vram5` (turbo) и `rvc.f0_method=pm`; проверить, что не включён `vram10` или `rmvpe` |
 
 ---
 
@@ -298,9 +298,9 @@ Piper. Так что при перезапуске одного из серви�
 
 | Компонент | VRAM |
 |---|---|
-| Whisper `large-v3-turbo` (`--profile prod`) | 1231 МБ |
-| Whisper `large-v3` (`--profile home`) | 2027 МБ |
-| Whisper `small` (`--profile fast`) | 465 МБ |
+| Whisper `large-v3-turbo` (`--profile vram5`) | 1231 МБ |
+| Whisper `large-v3` (`--profile vram10`) | 2027 МБ |
+| Whisper `small` (`--profile small`) | 465 МБ |
 | Qwen3-4B Q4_K_M, ctx 2048, KV `q8_0` | 2674 МБ |
 | RVC fp32 с `f0_method=pm` | 592 МБ |
 | RVC fp32 с `f0_method=rmvpe` | 926 МБ |
@@ -308,7 +308,7 @@ Piper. Так что при перезапуске одного из серви�
 **Дачная машина (5 ГБ):** turbo + 4B + RVC(pm) = **3.9 ГБ**, запас ~1.2 ГБ. Полная
 `large-v3` вместо turbo уже не влезает (5.3 ГБ), `rmvpe` вместо `pm` — впритык.
 
-**Домашняя (10 ГБ):** влезает `--profile home` с `large-v3` (4.7 ГБ), остаётся место
+**Домашняя (10 ГБ):** влезает `--profile vram10` с `large-v3` (4.7 ГБ), остаётся место
 и под модель LLM покрупнее — например Qwen3-8B Q4_K_M вместо 4B.
 
 Два решения, которые сделали дачный вариант возможным: **turbo вместо large-v3**

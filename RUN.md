@@ -48,7 +48,7 @@ curl -s http://127.0.0.1:8081/health    # {"status":"ok","voice":"voicevox_speak
 
 ```bash
 .venv/bin/python main.py run --live --responder llm --rvc \
-    --profile prod --threshold 0.00067
+    --profile vram5 --threshold 0.00067
 ```
 
 Скажите «**Феечка**, как слышно?» → пауза около секунды → ответ. Следующие 60 секунд
@@ -63,11 +63,11 @@ curl -s http://127.0.0.1:8081/health    # {"status":"ok","voice":"voicevox_speak
   `main.py calibrate --live --seconds 12`.
 - **Если агент стартовал раньше сервисов** — он не падает, а пишет `[warn]`: без
   llama-server молчит, без RVC передаёт голосом Piper.
-- **Первый запуск `--profile prod` дольше**: `large-v3-turbo` качается с HuggingFace
+- **Первый запуск `--profile vram5` дольше**: `large-v3-turbo` качается с HuggingFace
   (1.6 ГБ), дальше грузится из кэша за несколько секунд, плюс пара секунд на прогрев
   при первой фразе.
 - Для быстрых итераций, когда проверяете механику, а не качество распознавания, —
-  `--profile fast` (модель `small`, грузится за пару секунд).
+  `--profile small` (модель `small`, грузится за пару секунд).
 
 ## Видеопамять
 
@@ -78,20 +78,20 @@ curl -s http://127.0.0.1:8081/health    # {"status":"ok","voice":"voicevox_speak
 | десктоп: gnome-shell, Telegram, Element, Chrome, терминал | **2.5 ГБ** |
 | llama-server, `-c 4096` | 3.1 ГБ |
 | llama-server, `-c 2048` + KV `q8_0` | **2.7 ГБ** |
-| Whisper `large-v3-turbo` (`prod`) | 1231 МБ |
-| Whisper `large-v3` (`home`) | 2027 МБ |
-| Whisper `small` (`fast`) | 465 МБ |
+| Whisper `large-v3-turbo` (`vram5`) | 1231 МБ |
+| Whisper `large-v3` (`vram10`) | 2027 МБ |
+| Whisper `small` (профиль `small`) | 465 МБ |
 | RVC fp32, `f0_method=pm` | 592 МБ |
 | RVC fp32, `f0_method=rmvpe` | 926 МБ |
 
-Весь стек с профилем `prod` — **3.9 ГБ**, плюс 2.5 ГБ десктопа даёт 6.4 из 8. Влезает.
+Весь стек с профилем `vram5` — **3.9 ГБ**, плюс 2.5 ГБ десктопа даёт 6.4 из 8. Влезает.
 
 Главное, что легко упустить: **десктоп занимает 2.5 ГБ**, потому что монитор на
 dev-машине подключён к той же 2070. Пока стек был на `large-v3` и `-c 4096`, это
 приводило к `CUDA failed with error out of memory` — причём **не при старте, а на
 первой транскрипции**: инициализация проходила, а буферов энкодера уже не хватало.
 
-Если захотите `--profile home` (полная `large-v3`) — добавится ещё 800 МБ, и станет
+Если захотите `--profile vram10` (полная `large-v3`) — добавится ещё 800 МБ, и станет
 тесно; закрыть Telegram, Element и Chrome освободит около 450 МБ.
 
 ## Чем это отличается от прода
@@ -102,7 +102,7 @@ dev-машине подключён к той же 2070. Пока стек бы�
 |---|---|---|---|
 | PTT | заглушка | `--ptt txdbreak --port /dev/ttyUSB0` | — |
 | Звуковая карта | системный дефолт | `--device-rate 48000` | — |
-| Профиль STT | `prod` | `prod` (turbo) | `home` (large-v3) |
+| Профиль STT | `vram5` | `vram5` (turbo) | `vram10` (large-v3) |
 | Точность RVC | fp16 | fp32, переключается сам | fp32 |
 | Контекст LLM | `-c 2048` + KV `q8_0` | `-c 2048` + KV `q8_0` | `-c 4096`, памяти хватает |
 
@@ -110,7 +110,7 @@ dev-машине подключён к той же 2070. Пока стек бы�
 
 ```bash
 .venv/bin/python main.py run --live --responder llm --rvc \
-    --profile prod --device-rate 48000 --threshold ПОРОГ \
+    --profile vram5 --device-rate 48000 --threshold ПОРОГ \
     --ptt txdbreak --port /dev/ttyUSB0
 ```
 
@@ -119,7 +119,7 @@ dev-машине подключён к той же 2070. Пока стек бы�
 
 ## Замер локальной конфигурации
 
-Синтетический эфир (три передачи, полоса 300–3400 Гц), `--profile prod --rvc` —
+Синтетический эфир (три передачи, полоса 300–3400 Гц), `--profile vram5 --rvc` —
 для сверки, если что-то станет заметно медленнее:
 
 ```

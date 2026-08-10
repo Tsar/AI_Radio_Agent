@@ -171,14 +171,18 @@ class Config:
 # Профиль подбирается под видеопамять машины. Замеры (пик, int8, на RTX 2070):
 #   small 465 МБ | large-v3-turbo 1231 МБ | medium 1074 МБ | large-v3 2027 МБ
 # medium не используем: он тяжелее turbo и на нашем материале распознаёт хуже small.
+# Имена — по видеопамяти карты, а не по машине: обе прод-машины одинаково боевые,
+# различаются только объёмом VRAM.
 PROFILES: Dict[str, Dict[str, str]] = {
-    # дачная машина, Quadro P2000 (5 ГБ): turbo + Qwen3-4B + RVC ≈ 4.5 ГБ
-    "prod": {"model": "large-v3-turbo", "device": "cuda", "compute_type": "int8"},
-    # домашний сервер, P102-100 (10 ГБ): места хватает на полную large-v3
-    "home": {"model": "large-v3", "device": "cuda", "compute_type": "int8"},
-    "fast": {"model": "small", "device": "cuda", "compute_type": "int8"},
+    # 5 ГБ (Quadro P2000): turbo + Qwen3-4B + RVC = 3.9 ГБ, запас 1.2 ГБ
+    "vram5": {"model": "large-v3-turbo", "device": "cuda", "compute_type": "int8"},
+    # 10 ГБ (P102-100): хватает на полную large-v3
+    "vram10": {"model": "large-v3", "device": "cuda", "compute_type": "int8"},
+    # для отладки, когда качество распознавания вторично
+    "small": {"model": "small", "device": "cuda", "compute_type": "int8"},
     "cpu": {"model": "small", "device": "cpu", "compute_type": "int8"},
 }
+DEFAULT_PROFILE = "vram5"
 
 
 def apply_profile(cfg: Config, name: str) -> None:
