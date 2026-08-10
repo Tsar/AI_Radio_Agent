@@ -73,17 +73,44 @@
    Ubuntu**: считает по-прежнему dev-машина, то есть быстро, а ABI и набор инструкций
    получаются продовые.
    ```bash
-   # на dev-машине. Образ 20.04 даёт бинарь, который пойдёт и на домашней (20.04),
-   # и на дачной (22.04): вниз по версиям glibc совместимость работает, вверх — нет
-   docker run --rm -v ~/llama.cpp:/src -w /src \
+   # Образ 20.04 даёт бинарь, который пойдёт и на домашней (20.04), и на дачной
+   # (22.04): вниз по версиям glibc совместимость работает, вверх — нет.
+   # Собирать можно на любой машине с docker — проверено на домашнем сервере.
+   docker run --rm -e DEBIAN_FRONTEND=noninteractive -e TZ=Etc/UTC \
+       -v $HOME/llama.cpp:/src -w /src \
        nvidia/cuda:12.4.1-devel-ubuntu20.04 bash -c '
-     apt-get update && apt-get install -y cmake git &&
+     set -e
+     apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+         curl ca-certificates git
+     # cmake из 20.04 — 3.16, а ggml-cuda требует 3.18 (ради CMAKE_CUDA_ARCHITECTURES)
+     curl -sL https://github.com/Kitware/CMake/releases/download/v3.31.6/cmake-3.31.6-linux-x86_64.tar.gz \
+       | tar xz -C /opt
+     export PATH=/opt/cmake-3.31.6-linux-x86_64/bin:$PATH
      cmake -S . -B build-prod -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=61 \
            -DLLAMA_CURL=OFF -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=OFF \
-           -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF &&
-     cmake --build build-prod -j --target llama-server'
-   rsync -a ~/llama.cpp/build-prod/bin/ прод:~/llama.cpp/build/bin/
+           -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF \
+           -DGGML_CUDA_NCCL=OFF -DCMAKE_BUILD_RPATH_USE_ORIGIN=ON
+     cmake --build build-prod -j --target llama-server
+     chown -R '"$(id -u):$(id -g)"' build-prod'
+   rsync -a $HOME/llama.cpp/build-prod/bin/ прод:~/llama.cpp/build/bin/
    ```
+   Четыре неочевидных места, каждое ломает сборку или бинарь:
+
+   - **`DEBIAN_FRONTEND=noninteractive`** — без него `apt-get install cmake` тянет
+     `tzdata`, тот через debconf спрашивает часовой пояс и ждёт ввода. Контейнер
+     стоит намертво, снаружи выглядит как «сборка идёт», хотя нагрузки нет.
+   - **cmake ставится бинарём, а не из apt.** В 20.04 он 3.16, а
+     `ggml/src/ggml-cuda/CMakeLists.txt` требует 3.18 — ровно ради
+     `CMAKE_CUDA_ARCHITECTURES`, которым мы задаём `sm_61`.
+   - **`-DGGML_CUDA_NCCL=OFF`** — опция по умолчанию `ON`, и в образе NCCL есть,
+     так что бинарь прилинкуется к `libnccl.so.2` (на dev-машине её нет, поэтому
+     там проблема не проявляется). На проде такой библиотеки не будет, а нужна она
+     только для multi-GPU.
+   - **`-DCMAKE_BUILD_RPATH_USE_ORIGIN=ON`** — иначе в RUNPATH попадёт путь
+     *внутри контейнера* (`/src/build-prod/bin`), и рядом лежащие `libllama*.so`
+     не найдутся. С `$ORIGIN` они ищутся рядом с бинарём, и `LD_LIBRARY_PATH`
+     нужен только для CUDA.
+
    `-DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-13` в контейнере не нужен: там gcc 9,
    а упирается nvcc 12.4 только в gcc новее 13-го.
 
@@ -114,13 +141,26 @@
    ```bash
    ldd ~/llama.cpp/build/bin/llama-server | grep -E "not found|GLIBC|GLIBCXX|CXXABI"
    ```
+   У сборки в контейнере 20.04 максимальные требуемые версии — `GLIBC_2.14`
+   и `GLIBCXX_3.4.21`, то есть с запасом ниже, чем на обеих прод-машинах.
+   Финальная проверка — что карта видна:
+   ```bash
+   LD_LIBRARY_PATH=$NV/cublas/lib:$NV/cuda_runtime/lib \
+     ~/llama.cpp/build/bin/llama-server --list-devices
+   # CUDA0: NVIDIA P102-100 (10150 MiB, 8915 MiB free)
+   ```
    `61` вместо `61;75`: обе прод-машины на Pascal, Turing нужен только самой dev-машине.
    Готовых linux+CUDA бинарей у llama.cpp нет — CUDA-сборки публикуют только под Windows.
 
-   **RUNPATH тоже уедет вместе с бинарём.** cmake прописывает в него абсолютный путь
-   сборочного каталога (`/mnt/…/llama.cpp/build-prod/bin`), которого на проде нет, и
-   лежащие рядом `libllama*.so` / `libggml*.so` не находятся — при том что они прямо
-   в том же каталоге. Поэтому в `LD_LIBRARY_PATH` юнита каталог с бинарём идёт
+   **RUNPATH уезжает вместе с бинарём.** По умолчанию cmake прописывает туда
+   абсолютный путь сборочного каталога — при сборке в контейнере это вообще
+   `/src/build-prod/bin`, — и лежащие рядом `libllama*.so` / `libggml*.so` не
+   находятся, хотя они в том же каталоге. Флаг `-DCMAKE_BUILD_RPATH_USE_ORIGIN=ON`
+   выше меняет это на `$ORIGIN`, проверять так:
+   ```bash
+   objdump -x build/bin/llama-server | grep RUNPATH   # ожидается: $ORIGIN
+   ```
+   Если собирали без него, каталог с бинарём должен идти в `LD_LIBRARY_PATH` юнита
    **первым**, до CUDA-путей (см. раздел 6).
 
    CUDA линкуется **динамически**, а `nvidia-cuda-toolkit` на прод ставить незачем —
