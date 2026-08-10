@@ -479,7 +479,8 @@ Piper. Так что при перезапуске одного из серви�
 | Ответ звучит голосом Piper вместо RVC | RVC-сервис лежит, в логе есть `[warn] RVC недоступен` |
 | Первый ответ после долгой тишины идёт 10+ с | модель выгрузилась из VRAM — проверить, что `llama-server` не перезапускался |
 | Речь в эфире тихая или перемодулированная | аттенюатор, `tts.peak_dbfs`, уровень line-out в микшере |
-| `CUDA failed with error out of memory` на дачной машине | в 5 ГБ P2000 стек влезает только с `--profile vram5` (turbo) и `rvc.f0_method=pm`; проверить, что не включён `vram10` или `rmvpe`, а у `llama-server` стоит `-c 2048` с KV `q8_0`, а не `-c 4096` |
+| `CUDA failed with error out of memory` на дачной машине | первым делом — не поднялась ли графика: GNOME на P2000 берёт 270–400 МиБ, и без headless стек не влезает. Дальше: `--profile vram5` (не `vram10`), `rvc.f0_method=pm` (не `rmvpe`), `llama-server` с `-c 2048` и KV `q8_0` (не `-c 4096`), `PYTORCH_CUDA_ALLOC_CONF` в юните RVC |
+| OOM выпадает то на RVC, то на STT | это одна и та же нехватка, просто падает тот, кто выделяет память последним. С прогревом RVC занимает свои ~726 МиБ сразу, и упирается уже агент с Whisper. Не ищите причину в том звене, чьё имя в трейсе |
 | `llama-server` падает с `Illegal instruction` (SIGILL) | бинарь собран под чужой процессор. i7-2600 — Sandy Bridge: нет AVX2, FMA, F16C **и BMI2**. Пересобрать, как в шаге 1.2, и проверить `objdump`-ом |
 | `llama-server` не стартует: `libcudart.so.12: cannot open shared object file` | не установлен `nvidia-cuda-runtime-cu12` либо не задан `LD_LIBRARY_PATH` на каталоги `nvidia/*/lib` в venv агента |
 | `llama-server` не стартует: `libllama-server-impl.so: cannot open shared object file` | файл лежит рядом с бинарём, но RUNPATH ведёт на каталог сборочной машины. Добавить `%h/llama.cpp/build/bin` первым в `LD_LIBRARY_PATH` |
