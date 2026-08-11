@@ -131,11 +131,32 @@ def normalize_for_tts(text: str, lang: str = "ru") -> str:
     return text.strip()
 
 
-def clean_llm_reply(text: str, max_sentences: Optional[int] = None) -> str:
+def truncate_words(text: str, max_chars: int) -> str:
+    """Обрезать по границе слова, не длиннее max_chars.
+
+    Нужен потому, что max_sentences беззащитен перед текстом без знаков препинания:
+    на просьбу прочитать стихи Qwen3 выдал 80 токенов сплошным потоком, `split`
+    вернул один «предложение» на всю строку, и в эфир ушло 14.76 с вместо ~6.
+    """
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    cut = text[:max_chars]
+    space = cut.rfind(" ")
+    if space > max_chars // 2:      # у слова-переростка режем прямо по лимиту
+        cut = cut[:space]
+    # точка в конце: без неё синтезатор тянет незавершённую интонацию
+    return cut.rstrip(" ,;:-—") + "."
+
+
+def clean_llm_reply(text: str, max_sentences: Optional[int] = None,
+                    max_chars: Optional[int] = None) -> str:
     """Ответ LLM → готовая к синтезу строка. max_sentences подрезает многословие
-    модели: занимать эфир длинной передачей нельзя, а во время неё агент ещё и глух."""
+    модели, max_chars страхует его на тексте без точек: занимать эфир длинной
+    передачей нельзя, а во время неё агент ещё и глух."""
     text = normalize_for_tts(text)
     if max_sentences is not None and max_sentences > 0:
         parts = re.split(r"(?<=[.!?])\s+", text)
         text = " ".join(parts[:max_sentences]).strip()
+    if max_chars is not None:
+        text = truncate_words(text, max_chars)
     return text

@@ -76,6 +76,27 @@ class PiperTts:
         pcm = b"".join(getattr(c, "audio_int16_bytes", b"") for c in chunks)
         return pcm, rate
 
+    def _cap_duration(self, samples: List[float]) -> List[float]:
+        """Аварийный потолок длительности (cfg.max_seconds).
+
+        Стоит именно здесь, а не в репитере: RvcVoice оборачивает этот движок, и
+        обрезать надо **до** отправки в RVC. Пик VRAM у RVC растёт с длиной фразы,
+        и на 5 ГБ длинная передача роняет весь стек в OOM — а заодно надолго
+        занимает канал, пока агент глух. До этого рубежа доходить не должно:
+        выше по конвейеру текст уже подрезан max_sentences и max_chars.
+        """
+        limit = int(self.cfg.max_seconds * self.sample_rate)
+        if limit <= 0 or len(samples) <= limit:
+            return samples
+        was = len(samples) / self.sample_rate
+        samples = samples[:limit]
+        fade = min(int(0.05 * self.sample_rate), limit)   # 50 мс, чтобы не щёлкнуло
+        for i in range(fade):
+            samples[limit - fade + i] *= (fade - 1 - i) / fade
+        print(f"[TTS] ответ обрезан: {was:.2f} с → {self.cfg.max_seconds:.0f} с "
+              f"(потолок эфира)")
+        return samples
+
     def synth(self, text: str) -> List[float]:
         if not text.strip():
             return []
@@ -85,4 +106,4 @@ class PiperTts:
             return []
         if rate != self.sample_rate:
             samples = resample_linear(samples, rate, self.sample_rate)
-        return normalize_peak(samples, self.cfg.peak_dbfs)
+        return self._cap_duration(normalize_peak(samples, self.cfg.peak_dbfs))

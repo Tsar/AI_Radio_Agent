@@ -60,23 +60,34 @@ SYSTEM_PROMPT = (
 
 @dataclass
 class ReplyLength:
-    """Пресет длины ответа. Крутить эти три ручки порознь бессмысленно: промпт
+    """Пресет длины ответа. Крутить эти ручки порознь бессмысленно: промпт
     определяет, сколько модель напишет, max_sentences режет лишнее, а max_tokens —
-    только предохранитель (он рубит по счётчику и может оборвать на полуслове)."""
+    только предохранитель (он рубит по счётчику и может оборвать на полуслове).
+
+    max_chars и max_air_s — два нижних рубежа на случай, когда верхние не сработали.
+    Проверено в эфире: на «прочитай Лукоморье» модель выдала 80 токенов **без единой
+    точки**, max_sentences не нашёл границ предложений и не отрезал ничего, Piper
+    выдал 14.76 с — и RVC лёг с OOM на этой фразе. max_chars режет по словам там,
+    где точек нет; max_air_s — последний рубеж, уже по готовому аудио."""
     max_tokens: int
     max_sentences: int
+    max_chars: int     # предел нормализованного текста; режем по границе слова
+    max_air_s: float   # потолок эфира: аудио длиннее обрезается с затуханием
     hint: str          # подставляется в SYSTEM_PROMPT вместо {length}
     air_s: str         # замер на Qwen3-4B: сколько такой ответ занимает эфира
 
 
 # Во время своей передачи агент глух, поэтому длина — это не только вопрос вкуса.
+# Пересчёт char → секунды снят с прода (Piper ru_RU-irina-medium, i7-2600): 10–13.4
+# символа в секунду. max_chars берём по нижней границе (10), чтобы текстовая обрезка
+# срабатывала раньше аварийной обрезки аудио, а не наоборот.
 REPLY_LENGTHS: Dict[str, ReplyLength] = {
     "short": ReplyLength(
-        80, 2, "Отвечай кратко: одно-два коротких предложения.", "~6 с"),
+        80, 2, 110, 14.0, "Отвечай кратко: одно-два коротких предложения.", "~6 с"),
     "medium": ReplyLength(
-        200, 4, "Отвечай тремя-четырьмя предложениями.", "~11 с"),
+        200, 4, 260, 30.0, "Отвечай тремя-четырьмя предложениями.", "~11 с"),
     "long": ReplyLength(
-        400, 8, "Отвечай развёрнуто, шестью-восемью предложениями.", "~35 с"),
+        400, 8, 520, 55.0, "Отвечай развёрнуто, шестью-восемью предложениями.", "~35 с"),
 }
 DEFAULT_REPLY_LENGTH = "short"
 
@@ -110,6 +121,7 @@ class LlmConfig:
         length=REPLY_LENGTHS[DEFAULT_REPLY_LENGTH].hint)
     max_tokens: int = REPLY_LENGTHS[DEFAULT_REPLY_LENGTH].max_tokens
     max_sentences: int = REPLY_LENGTHS[DEFAULT_REPLY_LENGTH].max_sentences
+    max_chars: int = REPLY_LENGTHS[DEFAULT_REPLY_LENGTH].max_chars
     temperature: float = 0.7
     timeout_s: float = 60.0
     no_think: bool = True          # Qwen3 без этого генерит <think>…</think> — время и токены впустую
@@ -122,6 +134,10 @@ class TtsConfig:
     voice: str = "models/piper/ru_RU-irina-medium.onnx"
     peak_dbfs: float = -3.0                  # уровень отдаваемого в эфир аудио
     length_scale: "float | None" = None      # None — как в модели; >1 медленнее, <1 быстрее
+    # Потолок длительности синтеза. Ставится пресетом --reply-length (max_air_s) и
+    # срабатывает до RVC: длинная фраза — это и занятый канал, и пик VRAM у RVC,
+    # который на 5 ГБ уводит весь стек в OOM. 0 — без ограничения.
+    max_seconds: float = REPLY_LENGTHS[DEFAULT_REPLY_LENGTH].max_air_s
 
 
 @dataclass
@@ -216,4 +232,6 @@ def apply_reply_length(cfg: Config, name: str) -> None:
     cfg.llm.reply_length = name
     cfg.llm.max_tokens = preset.max_tokens
     cfg.llm.max_sentences = preset.max_sentences
+    cfg.llm.max_chars = preset.max_chars
+    cfg.tts.max_seconds = preset.max_air_s   # потолок эфира едет вместе с пресетом
     cfg.llm.system_prompt = SYSTEM_PROMPT.format(length=preset.hint)
