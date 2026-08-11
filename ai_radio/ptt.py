@@ -19,7 +19,10 @@ from typing import Protocol
 
 
 class Ptt(Protocol):
-    def key(self) -> None: ...
+    def key(self) -> bool:
+        """Нажать передачу. False — не удалось (линия пропала), звук в эфир не уйдёт."""
+        ...
+
     def unkey(self) -> None: ...
     def close(self) -> None: ...
 
@@ -31,10 +34,11 @@ class DummyPtt:
         self.verbose = verbose
         self.keyed = False
 
-    def key(self) -> None:
+    def key(self) -> bool:
         self.keyed = True
         if self.verbose:
             print("[PTT] KEY   — заглушка, линия не трогается")
+        return True
 
     def unkey(self) -> None:
         self.keyed = False
@@ -62,11 +66,50 @@ class TxdBreakPtt:
 
     def __init__(self, port: str = "/dev/ttyUSB0", invert: bool = True,
                  baudrate: int = 9600) -> None:
-        import serial  # локальный импорт: нужен только для этого backend'а
+        self.port = port
         self.invert = invert
-        self._ser = serial.Serial(port, baudrate)
+        self.baudrate = baudrate
+        self._ser = None
         self.keyed = False
-        self._set_break(False)  # старт из состояния «приём»
+        self._broken = False    # линия считается потерянной — пробуем переоткрыть
+        self._open()
+
+    def _open(self) -> bool:
+        """Открыть порт. Не бросает: без PTT агент всё равно полезнее, чем мёртвый.
+
+        Отсутствие адаптера при старте раньше валило агента целиком, а обрыв на ходу
+        оставлял его немым до перезапуска сервиса — дескриптор мёртв, и обратное
+        втыкание USB ничего не меняло. CH341 отваливается от помех и плохого
+        контакта, а помех рядом с передатчиком будет вдоволь.
+        """
+        import serial  # локальный импорт: нужен только для этого backend'а
+        try:
+            self._ser = serial.Serial(self.port, self.baudrate)
+            self._set_break(False)      # старт из состояния «приём»
+        except (OSError, serial.SerialException) as exc:
+            self._ser = None
+            if not self._broken:        # об одной и той же беде — один раз
+                print(f"[PTT] порт {self.port} недоступен: {exc}")
+            self._broken = True
+            return False
+        print(f"[PTT] линия восстановлена ({self.port})" if self._broken
+              else f"[PTT] порт {self.port} открыт")
+        self._broken = False
+        return True
+
+    def _drop(self, exc: BaseException) -> None:
+        """Линия пропала посреди работы — закрыть и ждать следующей попытки."""
+        print(f"[PTT] линия пропала ({self.port}): {exc}")
+        print("[PTT] попробую переоткрыть на следующей передаче — "
+              "воткните адаптер обратно, перезапуск сервиса не нужен")
+        try:
+            if self._ser is not None:
+                self._ser.close()
+        except Exception:       # noqa: BLE001 — порта уже нет, закрывать нечего
+            pass
+        self._ser = None
+        self.keyed = False
+        self._broken = True
 
     def _set_break(self, active: bool) -> None:
         # active=True — хотим «передача». При инверсии break снимается для передачи.
@@ -83,21 +126,45 @@ class TxdBreakPtt:
         broken = (not active) if self.invert else active
         return "break подан, TX low" if broken else "break снят, TX high"
 
-    def key(self) -> None:
-        self._set_break(True)
+    def key(self) -> bool:
+        import serial
+        if self._ser is None and not self._open():
+            print("[PTT] нажать нечем — передача прозвучит, но в эфир не уйдёт")
+            return False
+        try:
+            self._set_break(True)
+        except (OSError, serial.SerialException) as exc:
+            self._drop(exc)
+            return False
         self.keyed = True
         print(f"[PTT] KEY   (передача): {self._line(True)}")
+        return True
 
     def unkey(self) -> None:
-        self._set_break(False)
+        import serial
+        if self._ser is None:
+            return
+        try:
+            self._set_break(False)
+        except (OSError, serial.SerialException) as exc:
+            self._drop(exc)     # отпустить уже нечего, линии нет
+            return
         self.keyed = False
         print(f"[PTT] UNKEY (приём): {self._line(False)}")
 
     def close(self) -> None:
+        if self._ser is None:
+            return
         try:
             self._set_break(False)  # гарантированно вернуть в приём
+        except Exception:           # noqa: BLE001 — порт мог исчезнуть
+            pass
         finally:
-            self._ser.close()
+            try:
+                self._ser.close()
+            except Exception:       # noqa: BLE001
+                pass
+            self._ser = None
 
     def __enter__(self) -> "TxdBreakPtt":
         return self

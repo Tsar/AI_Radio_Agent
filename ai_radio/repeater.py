@@ -154,9 +154,13 @@ class Repeater:
         # Порядок строк в журнале повторяет порядок событий на линии: сначала
         # нажали PTT, выждали warmup, и только теперь пошёл звук. Раньше «[TX]»
         # печаталось до нажатия, и при разборе тракта по логу это путало.
-        self.ptt.key()
+        keyed = self.ptt.key()
         self._sleep(self.cfg.tx.warmup_ms)
-        print(f"[TX] передача #{self.n_transmissions}: {dur:.2f} с")
+        # Без нажатия звук всё равно играем: на столе он идёт в динамик и слышен,
+        # а в эфир не уходит — рация не переключилась. Помечаем, чтобы по журналу
+        # не гадать, почему на второй рации тишина.
+        note = "" if keyed else "   [в эфир НЕ ушло: PTT не нажался]"
+        print(f"[TX] передача #{self.n_transmissions}: {dur:.2f} с{note}")
         self.sink.play(audio)
         self._sleep(self.cfg.tx.tail_ms)
         self.ptt.unkey()
