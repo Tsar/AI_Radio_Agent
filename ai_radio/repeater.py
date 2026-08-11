@@ -34,6 +34,7 @@ class Repeater:
         self.max_utterance_samples = max(fs, cfg.vad.max_utterance_ms * cfg.audio.sample_rate // 1000)
 
         self.n_transmissions = 0
+        self.n_failures = 0          # неудачных фраз подряд (см. _report_failure)
 
     def run(self, source) -> None:
         """source — объект с методом frames() -> Iterable[list[float]]."""
@@ -108,12 +109,33 @@ class Repeater:
         self._pause_source()
         try:
             response = self.responder.respond(utterance)
+            self.n_failures = 0       # конвейер отработал — серия неудач кончилась
             if not response:
                 print("[--] ответа нет, не передаём")
                 return
             self._transmit(response)
+        except Exception as exc:      # noqa: BLE001 — см. ниже, падать тут нельзя
+            self._report_failure(exc)
         finally:
             self._resume_source()     # входной буфер сброшен рестартом стрима
+
+    def _report_failure(self, exc: BaseException) -> None:
+        """Одна неудачная фраза не должна ронять агента.
+
+        Так было до 11.08.2026: `CUDA failed with error out of memory` из Whisper
+        поднимался до main(), процесс выходил с кодом 1, systemd поднимал его заново —
+        и снова, потому что память держал сосед (RVC после своего OOM не отдаёт пул).
+        19 рестартов подряд, вылеченных перезагрузкой машины. Пропустить фразу и
+        остаться в эфире — единственное осмысленное поведение: соседние сервисы
+        могут прийти в себя сами, а агент к тому моменту должен быть жив.
+        """
+        self.n_failures += 1
+        print(f"[ERR] фраза не обработана ({self.n_failures}-я подряд): "
+              f"{type(exc).__name__}: {exc}")
+        if "out of memory" in str(exc).lower():
+            print("[ERR] это нехватка VRAM, а не сбой самой фразы. Кто держит память —"
+                  " смотреть в nvidia-smi; чаще всего помогает "
+                  "`systemctl --user restart ai-radio-rvc`")
 
     def _transmit(self, audio: List[float]) -> None:
         dur = len(audio) / self.cfg.audio.sample_rate
