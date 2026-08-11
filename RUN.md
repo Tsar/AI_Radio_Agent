@@ -35,6 +35,17 @@ cd ../Retrieval-based-Voice-Conversion-WebUI
 не грузится. Если памяти совсем нет, RVC можно целиком увести на CPU, добавив
 `CUDA_VISIBLE_DEVICES=` — но тогда конвертация займёт 0.6–0.7 с вместо 0.35.
 
+Здесь карта Turing, поэтому сервис идёт в fp16 и берёт свою раскладку нарезки. Чтобы
+воспроизвести прод (Pascal, fp32, 5 ГБ) — те же флаги, что стоят в юните на даче:
+
+```bash
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+    .venv/bin/python infer-http-service.py --port 8081 --fp32 --max-segment 6
+```
+
+Проверить, что доехало: `curl -s 127.0.0.1:8081/health` → `"is_half": false` и
+`"chunking": {"x_pad": 1, ..., "x_max": 9}`. Почему это важно — DEPLOY.md, раздел 8.
+
 ## 3. Агент
 
 Дождитесь, пока поднимутся оба сервиса:
