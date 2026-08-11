@@ -179,24 +179,32 @@ def cmd_trigger_test(args: argparse.Namespace) -> int:
 
 
 def cmd_hallucination_test(args: argparse.Namespace) -> int:
-    from ai_radio.hallucinations import verdict
+    from ai_radio.hallucinations import strip_subtitles, verdict
     cfg = Config()
     _apply_ai(cfg, args)
     h = cfg.hallucination
     print(f"длительность фразы: {args.duration} с "
           f"(минимум {h.min_utterance_ms / 1000:.2f} с)\n")
     for phrase in args.text:
+        removed = ""
         if args.duration and args.duration < h.min_utterance_ms / 1000.0:
             reason = "короче минимума — в STT такое вообще не попадает"
         else:
-            reason = verdict(phrase, args.duration,
+            # тот же порядок, что в бою: сначала срезать титры, потом судить остаток
+            kept, removed = strip_subtitles(phrase)
+            reason = verdict(kept, args.duration,
                              initial_prompt=cfg.stt.initial_prompt,
                              min_chars_per_s=h.min_chars_per_s,
                              max_chars_per_s=h.max_chars_per_s,
                              long_dur_s=h.long_dur_s,
                              long_min_chars=h.long_min_chars)
-        mark = "ОТСЕЯНА" if reason else "пропущена"
-        print(f"  {mark}  {phrase!r}\n            {reason or 'похоже на живую речь'}")
+        if reason:
+            print(f"  ОТСЕЯНА    {phrase!r}\n             {reason}")
+        elif removed:
+            print(f"  ОБРЕЗАНА   {phrase!r}\n             срезан титр: «{removed}»"
+                  f"\n             в работу пойдёт: {kept!r}")
+        else:
+            print(f"  пропущена  {phrase!r}\n             похоже на живую речь")
     return 0
 
 

@@ -16,7 +16,7 @@ from .config import Config
 from .dialog import DialogState
 from .engines.base import LlmEngine, SttEngine, TtsEngine
 from .engines.llm_llamacpp import LlmUnavailable
-from .hallucinations import verdict as hallucination_verdict
+from .hallucinations import strip_subtitles, verdict as hallucination_verdict
 from .textnorm import clean_llm_reply
 
 
@@ -61,6 +61,10 @@ class LLMResponder:
         # пополняется список маркеров, а строка остаётся самодостаточной для grep.
         cfg_h = self.cfg.hallucination
         if cfg_h.enabled:
+            # Сначала срезаем титры, приклеенные к живой фразе, и только остаток
+            # проверяем правилами: «Феечка, расскажи. Продолжение следует.» — это
+            # вопрос, на который надо ответить, а не галлюцинация целиком
+            text, removed = strip_subtitles(text)
             reason = hallucination_verdict(
                 text, len(utterance) / self.cfg.audio.sample_rate,
                 initial_prompt=self.cfg.stt.initial_prompt,
@@ -68,9 +72,15 @@ class LLMResponder:
                 max_chars_per_s=cfg_h.max_chars_per_s,
                 long_dur_s=cfg_h.long_dur_s, long_min_chars=cfg_h.long_min_chars)
             if reason:
-                print(f"[STT] {text}  → галлюцинация ({reason}), молчим")
+                whole = f"{text} {removed}".strip()
+                print(f"[STT] {whole}  → галлюцинация ({reason}), молчим")
                 return None
-        print(f"[STT] {text}")
+            if removed:
+                print(f"[STT] {text}  (срезан титр: «{removed}»)")
+            else:
+                print(f"[STT] {text}")
+        else:
+            print(f"[STT] {text}")
 
         if self.dialog.is_end_phrase(text):
             self.dialog.reset()
