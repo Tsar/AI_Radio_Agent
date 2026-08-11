@@ -54,10 +54,11 @@ class LLMResponder:
         if not text:
             print("[STT] не разобрал — молчим")
             return None
-        print(f"[STT] {text}")
 
         # Проверяем до триггера и до диалога: галлюцинация не должна ни вызывать
-        # ответ, ни продлевать окно разговора — иначе шум сам себя поддерживает
+        # ответ, ни продлевать окно разговора — иначе шум сам себя поддерживает.
+        # Отсеянное печатаем той же строкой [STT] и с текстом: по журналу потом
+        # пополняется список маркеров, а строка остаётся самодостаточной для grep.
         cfg_h = self.cfg.hallucination
         if cfg_h.enabled:
             reason = hallucination_verdict(
@@ -67,8 +68,9 @@ class LLMResponder:
                 max_chars_per_s=cfg_h.max_chars_per_s,
                 long_dur_s=cfg_h.long_dur_s, long_min_chars=cfg_h.long_min_chars)
             if reason:
-                print(f"[--] галлюцинация STT ({reason}) — молчим")
+                print(f"[STT] {text}  → галлюцинация ({reason}), молчим")
                 return None
+        print(f"[STT] {text}")
 
         if self.dialog.is_end_phrase(text):
             self.dialog.reset()

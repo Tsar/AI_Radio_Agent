@@ -109,7 +109,9 @@ class Repeater:
         # работы STT тратится всерьёз.
         min_dur = self.cfg.hallucination.min_utterance_ms / 1000.0
         if self.cfg.hallucination.enabled and dur < min_dur:
-            print(f"[--] короче {min_dur:.2f} с — не речь, пропускаем")
+            # Текста в журнале здесь не будет: Whisper мы для такого куска не зовём.
+            # Чтобы увидеть, что он на них выдумывает, поставьте min_utterance_ms=0.
+            print(f"[--] короче {min_dur:.2f} с — щелчок, а не речь: в STT не отдаём")
             return
 
         # Вход на паузе на всё время «думаем + передаём» (строгий half-duplex).
