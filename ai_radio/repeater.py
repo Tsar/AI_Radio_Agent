@@ -151,9 +151,12 @@ class Repeater:
     def _transmit(self, audio: List[float]) -> None:
         dur = len(audio) / self.cfg.audio.sample_rate
         self.n_transmissions += 1
-        print(f"[TX] передача #{self.n_transmissions}: {dur:.2f} с")
+        # Порядок строк в журнале повторяет порядок событий на линии: сначала
+        # нажали PTT, выждали warmup, и только теперь пошёл звук. Раньше «[TX]»
+        # печаталось до нажатия, и при разборе тракта по логу это путало.
         self.ptt.key()
         self._sleep(self.cfg.tx.warmup_ms)
+        print(f"[TX] передача #{self.n_transmissions}: {dur:.2f} с")
         self.sink.play(audio)
         self._sleep(self.cfg.tx.tail_ms)
         self.ptt.unkey()
