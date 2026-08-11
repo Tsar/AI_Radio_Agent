@@ -1,9 +1,15 @@
 """Управление PTT (нажатие «передача»).
 
 Backend'ы:
-  DummyPtt    — только пишет в лог KEY/UNKEY (для симуляции без железа).
+  DummyPtt    — только пишет в лог KEY/UNKEY (для симуляции без железа). Строки
+                помечены «заглушка», чтобы боевой режим нельзя было спутать с ним.
   TxdBreakPtt — держит линию TX USB-UART в состоянии break на время передачи
                 (наш проверенный способ; сигнал инвертирован, см. флаг invert).
+                Пишет рядом состояние линии — по нему проверяется инверсия.
+
+Логируют оба, и одинаково подробно: молчащий боевой backend означал, что при
+отладке тракта в журнале видно только «[TX] передача», а нажалась ли линия —
+неизвестно.
 
 Общий интерфейс: key(), unkey(), close(). Поддерживает контекст-менеджер.
 """
@@ -28,12 +34,12 @@ class DummyPtt:
     def key(self) -> None:
         self.keyed = True
         if self.verbose:
-            print("[PTT] KEY  (передача)")
+            print("[PTT] KEY   — заглушка, линия не трогается")
 
     def unkey(self) -> None:
         self.keyed = False
         if self.verbose:
-            print("[PTT] UNKEY (приём)")
+            print("[PTT] UNKEY — заглушка")
 
     def close(self) -> None:
         if self.keyed:
@@ -66,13 +72,26 @@ class TxdBreakPtt:
         # active=True — хотим «передача». При инверсии break снимается для передачи.
         self._ser.break_condition = (not active) if self.invert else active
 
+    def _line(self, active: bool) -> str:
+        """Что физически на линии TX — это и есть проверка инверсии.
+
+        Боевой backend раньше молчал, и в журнале от него не было ни строки:
+        видно было только «[TX] передача», а дошла ли команда до линии и в какую
+        сторону — приходилось смотреть осциллографом. Теперь состояние пишется
+        рядом с каждым нажатием, и перепутанную инверсию видно прямо в логе.
+        """
+        broken = (not active) if self.invert else active
+        return "break подан, TX low" if broken else "break снят, TX high"
+
     def key(self) -> None:
         self._set_break(True)
         self.keyed = True
+        print(f"[PTT] KEY   (передача): {self._line(True)}")
 
     def unkey(self) -> None:
         self._set_break(False)
         self.keyed = False
+        print(f"[PTT] UNKEY (приём): {self._line(False)}")
 
     def close(self) -> None:
         try:
