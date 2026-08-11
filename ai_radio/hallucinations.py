@@ -105,9 +105,12 @@ def verdict(text: str, duration_s: Optional[float] = None,
             return f"{rate:.0f} симв/с — так не говорят"
         if min_chars_per_s and rate < min_chars_per_s:
             return f"{rate:.1f} симв/с — подозрительно медленно"
-        # Длинная передача, а текста на пару слов — обычно шум, из которого Whisper
-        # выжал одну фразу (47 попаданий, из них 43 субтитры; ложных 4 из 1852)
-        if duration_s > long_dur_s and len(stripped) < long_min_chars:
+        # Длинная передача с текстом на пару слов. По умолчанию ВЫКЛЮЧЕНО
+        # (long_min_chars = 0): все титры, которые оно ловило, и так снимаются
+        # шаблонами выше, а живую речь оно резало — «Хорошо.» на 14 с, «Так, ну вот,
+        # хорошо.» на 21 с. В эфире это нормальный случай: человек вышел на связь,
+        # разбирается, слышно ли его, и только потом коротко отвечает.
+        if long_min_chars and duration_s > long_dur_s and len(stripped) < long_min_chars:
             return f"{duration_s:.0f} с эфира на {len(stripped)} символов"
 
     return None
