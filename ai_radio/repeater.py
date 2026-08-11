@@ -103,6 +103,15 @@ class Repeater:
         dur = len(utterance) / self.cfg.audio.sample_rate
         print(f"[RX] принята фраза: {dur:.2f} с")
 
+        # Обрывок короче min_utterance_ms — щелчок PTT или скрип, а не речь. Гнать
+        # его в Whisper незачем: на таких кусках он и выдаёт свои субтитры (245 раз
+        # «Продолжение следует» на фразах короче 0.4 с в журнале прода), а секунда
+        # работы STT тратится всерьёз.
+        min_dur = self.cfg.hallucination.min_utterance_ms / 1000.0
+        if self.cfg.hallucination.enabled and dur < min_dur:
+            print(f"[--] короче {min_dur:.2f} с — не речь, пропускаем")
+            return
+
         # Вход на паузе на всё время «думаем + передаём» (строгий half-duplex).
         # respond() у LLM работает секунды: незачитанный поток успел бы переполниться,
         # а после возврата мы бы прогнали через VAD звук, накопившийся за время раздумий.

@@ -16,6 +16,7 @@ from .config import Config
 from .dialog import DialogState
 from .engines.base import LlmEngine, SttEngine, TtsEngine
 from .engines.llm_llamacpp import LlmUnavailable
+from .hallucinations import verdict as hallucination_verdict
 from .textnorm import clean_llm_reply
 
 
@@ -54,6 +55,20 @@ class LLMResponder:
             print("[STT] не разобрал — молчим")
             return None
         print(f"[STT] {text}")
+
+        # Проверяем до триггера и до диалога: галлюцинация не должна ни вызывать
+        # ответ, ни продлевать окно разговора — иначе шум сам себя поддерживает
+        cfg_h = self.cfg.hallucination
+        if cfg_h.enabled:
+            reason = hallucination_verdict(
+                text, len(utterance) / self.cfg.audio.sample_rate,
+                initial_prompt=self.cfg.stt.initial_prompt,
+                min_chars_per_s=cfg_h.min_chars_per_s,
+                max_chars_per_s=cfg_h.max_chars_per_s,
+                long_dur_s=cfg_h.long_dur_s, long_min_chars=cfg_h.long_min_chars)
+            if reason:
+                print(f"[--] галлюцинация STT ({reason}) — молчим")
+                return None
 
         if self.dialog.is_end_phrase(text):
             self.dialog.reset()

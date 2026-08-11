@@ -178,6 +178,28 @@ def cmd_trigger_test(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_hallucination_test(args: argparse.Namespace) -> int:
+    from ai_radio.hallucinations import verdict
+    cfg = Config()
+    _apply_ai(cfg, args)
+    h = cfg.hallucination
+    print(f"длительность фразы: {args.duration} с "
+          f"(минимум {h.min_utterance_ms / 1000:.2f} с)\n")
+    for phrase in args.text:
+        if args.duration and args.duration < h.min_utterance_ms / 1000.0:
+            reason = "короче минимума — в STT такое вообще не попадает"
+        else:
+            reason = verdict(phrase, args.duration,
+                             initial_prompt=cfg.stt.initial_prompt,
+                             min_chars_per_s=h.min_chars_per_s,
+                             max_chars_per_s=h.max_chars_per_s,
+                             long_dur_s=h.long_dur_s,
+                             long_min_chars=h.long_min_chars)
+        mark = "ОТСЕЯНА" if reason else "пропущена"
+        print(f"  {mark}  {phrase!r}\n            {reason or 'похоже на живую речь'}")
+    return 0
+
+
 def cmd_devices(args: argparse.Namespace) -> int:
     import sounddevice as sd
     print(sd.query_devices())
@@ -259,6 +281,14 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("text", nargs="+", help="фразы для проверки")
     _add_ai_args(t)
     t.set_defaults(func=cmd_trigger_test)
+
+    hl = sub.add_parser("hallucination-test",
+                        help="проверить, отсеется ли фраза как галлюцинация STT")
+    hl.add_argument("text", nargs="+", help="распознанные фразы для проверки")
+    hl.add_argument("--duration", type=float, default=4.0,
+                    help="длительность фразы в секундах (часть правил зависит от неё)")
+    _add_ai_args(hl)
+    hl.set_defaults(func=cmd_hallucination_test)
 
     d = sub.add_parser("devices", help="список аудиоустройств")
     d.set_defaults(func=cmd_devices)

@@ -112,6 +112,18 @@ class SttConfig:
 
 
 @dataclass
+class HallucinationConfig:
+    """Отсев того, что Whisper «слышит» в шуме. Подробности и замеры —
+    в `ai_radio/hallucinations.py`; пороги снимались на журнале дачной машины."""
+    enabled: bool = True
+    min_utterance_ms: int = 400    # короче — щелчок PTT, а не речь; в STT не идёт вовсе
+    max_chars_per_s: float = 30.0  # быстрее человек не говорит
+    min_chars_per_s: float = 0.0   # 0 — правило выключено: оно режет живые «Да», «Угу»
+    long_dur_s: float = 8.0        # длинная передача…
+    long_min_chars: int = 25       # …на которой распознали два слова — это шум
+
+
+@dataclass
 class LlmConfig:
     base_url: str = "http://127.0.0.1:8080"   # llama-server (OpenAI-совместимый /v1)
     model: str = "local"
@@ -177,6 +189,7 @@ class Config:
     tx: TxConfig = field(default_factory=TxConfig)
     ptt: PttConfig = field(default_factory=PttConfig)
     stt: SttConfig = field(default_factory=SttConfig)
+    hallucination: HallucinationConfig = field(default_factory=HallucinationConfig)
     llm: LlmConfig = field(default_factory=LlmConfig)
     tts: TtsConfig = field(default_factory=TtsConfig)
     rvc: RvcConfig = field(default_factory=RvcConfig)
