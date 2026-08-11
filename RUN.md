@@ -40,11 +40,11 @@ cd ../Retrieval-based-Voice-Conversion-WebUI
 
 ```bash
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-    .venv/bin/python infer-http-service.py --port 8081 --fp32 --max-segment 6
+    .venv/bin/python infer-http-service.py --port 8081 --fp32 --max-segment 4
 ```
 
 Проверить, что доехало: `curl -s 127.0.0.1:8081/health` → `"is_half": false` и
-`"chunking": {"x_pad": 1, ..., "x_max": 9}`. Почему это важно — DEPLOY.md, раздел 8.
+`"chunking": {"x_pad": 1, ..., "x_max": 7}`. Почему это важно — DEPLOY.md, раздел 8.
 
 ## 3. Агент
 
