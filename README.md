@@ -119,7 +119,7 @@ curl'ом: `curl --data-binary @фраза.wav -o ответ.wav http://мозг
 | Звено | Что используем | Почему |
 |---|---|---|
 | STT | faster-whisper `large-v3-turbo`, **`compute_type=int8`** | устойчив к шуму и узкой полосе рации; на Pascal FP16 идёт в 1/64 скорости, а CTranslate2 требует для него cc ≥ 7.0 |
-| LLM | llama-server + Qwen3-4B `Q4_K_M` | отдельный процесс, модель постоянно в VRAM |
+| LLM | llama-server + Qwen3-4B `Q4_K_M` (на 10 ГБ — Qwen3-8B) | отдельный процесс, модель постоянно в VRAM |
 | TTS | Piper `ru_RU-irina-medium` (CPU) | быстрый; разницу с тяжёлыми TTS всё равно срезает полоса 300–3400 Гц |
 | Голос | RVC `voicevox_speaker_43` (опционально) | тембр различим и в полосе рации, в отличие от «натуральности» TTS |
 
