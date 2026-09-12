@@ -46,7 +46,10 @@ class FileSource:
 
     def frames(self) -> Iterator[List[float]]:
         cmd = [
-            ffmpeg_bin(), "-hide_banner", "-loglevel", "error",
+            # -nostdin: иначе ffmpeg читает наш stdin в поисках интерактивных команд
+            # («q» — выйти) и съедает то, что там лежит: ввод с клавиатуры или
+            # остаток скрипта, если агент запущен через `bash -s` по ssh
+            ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-nostdin",
             "-i", self.path,
             "-ac", "1", "-ar", str(self.sample_rate),
             "-f", "s16le", "-acodec", "pcm_s16le", "-",
