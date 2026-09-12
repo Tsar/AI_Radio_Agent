@@ -1,0 +1,242 @@
+# Тонкий клиент у рации: установка с нуля
+
+Клиент — это машина, к которой подключена рация (или микрофон с наушниками):
+она слушает эфир, вырезает фразу по громкости, отправляет её мозгу по сети,
+получает готовый ответ и передаёт его в эфир, нажимая PTT. Моделей, видеокарты и
+интернета ей не нужно — только звук, USB-UART для PTT и доступ к мозгу по
+локальной сети.
+
+Мозг (`main.py serve`) должен уже работать на другой машине — как его поднять,
+написано в [DEPLOY.md](DEPLOY.md), раздел 6. Ниже вместо `192.168.1.10`
+подставляйте адрес своей машины с мозгом.
+
+Каждый шаг — команда и то, что должно получиться. Если получилось не то —
+в конце есть таблица «если что-то не так».
+
+## 1. Проверить, что мозг виден
+
+```bash
+curl -s http://192.168.1.10:8082/health
+```
+
+Ожидается строка вида `{"status": "ok", ..., "callsign": "феечка", ...}`.
+Если вместо неё пусто или `Connection refused` — дальше идти рано: либо мозг
+не запущен, либо машины не в одной сети, либо адрес не тот.
+
+## 2. Пакеты и права
+
+```bash
+sudo apt install git python3-venv libportaudio2 curl
+sudo usermod -aG audio,dialout $USER
+```
+
+`audio` даёт доступ к звуковой карте, когда за монитором никто не сидит (клиент
+будет работать сервисом), `dialout` — к USB-UART для PTT. **Группы применяются
+только после нового входа в систему**: выйдите и войдите заново (или перезагрузитесь).
+Проверка — в выводе `id -nG` есть и `audio`, и `dialout`.
+
+`ffmpeg` клиенту не нужен; понадобится, только если захотите прогонять записи из
+файла (`--in-file`).
+
+## 3. Код и окружение
+
+```bash
+git clone https://github.com/Tsar/AI_Radio_Agent.git ~/AI_Radio_Agent
+cd ~/AI_Radio_Agent
+python3 --version
+```
+
+Нужен Python **3.10 или новее** (Ubuntu 22.04 и дальше). Если старше — см. врезку ниже.
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python main.py devices
+```
+
+Последняя команда печатает список звуковых устройств с номерами:
+
+```
+   0 HDA Intel PCH: ALC256 Analog (hw:0,0), ALSA (2 in, 2 out)
+   4 USB Audio: - (hw:1,0), ALSA (2 in, 8 out)
+  13 pulse, ALSA (32 in, 32 out)
+* 14 default, ALSA (32 in, 32 out)
+```
+
+Запомните номер той карты, куда воткнута рация — он понадобится как
+`--in-device` и `--out-device`. Подойдёт и часть имени, если она в одно слово
+(`--in-device USB`).
+
+**Если `python3` старше 3.10** (Ubuntu 20.04 и раньше) — вместо двух команд с venv:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+~/.local/bin/uv venv --python 3.10 .venv
+~/.local/bin/uv pip install -r requirements.txt
+```
+
+Дальше всё одинаково: `.venv/bin/python …`.
+
+## 4. Подобрать порог громкости
+
+Клиент считает началом передачи момент, когда звук стал громче порога, и порог
+у каждой карты свой. Рация — с закрытым шумоподавителем, чтобы без сигнала на
+входе была тишина.
+
+```bash
+.venv/bin/python main.py calibrate --live --seconds 12 --in-device 4
+```
+
+Первые четыре секунды молчите (меряется фон), потом пусть кто-нибудь выйдет в
+эфир — или говорите в микрофон сами. В конце будет строка:
+
+```
+>>> РЕКОМЕНДОВАННЫЙ ПОРОГ: -58.6 dBFS  (threshold = 0.00118)
+```
+
+Число `threshold` — то, что дальше идёт в `--threshold`. Если «разнос
+сигнал/шум» в отчёте меньше 10 дБ — сигнал слишком тихий или фон слишком
+громкий, крутите уровень записи в микшере и повторяйте.
+
+## 5. Проверить без рации и без PTT
+
+Сначала «попугай»: клиент возвращает в наушники то, что услышал. **Наушники, а
+не колонки**, иначе он услышит сам себя.
+
+```bash
+.venv/bin/python main.py run --live --threshold 0.00118 --in-device 4 --out-device 4
+```
+
+Скажите фразу, замолчите на секунду — она вернётся. В журнале: `[RX] принята
+фраза: 2.1 с` и `[TX] передача #1`. Остановка — `Ctrl+C`.
+
+Теперь то же, но ответ даёт мозг:
+
+```bash
+.venv/bin/python main.py run --live --responder remote --server http://192.168.1.10:8082 \
+    --threshold 0.00118 --in-device 4 --out-device 4
+```
+
+Первой строкой клиент скажет, какой мозг нашёл:
+`[init] сервер http://192.168.1.10:8082: ответчик llm, позывной феечка, STT large-v3, с RVC`.
+Скажите «**Феечка, как слышно?**» — через пару секунд в наушниках будет ответ, а
+в журнале строки мозга:
+
+```
+[RX] принята фраза: 2.52 с
+[STT] Феечка, как слышно, приём.
+[..] отвечаем (позывной)
+[LLM] Приём. Слушаю.
+[NET] сервер: 1.40 с (из них сеть 0.22 с)
+[TX] передача #1: 1.43 с
+```
+
+Фраза без позывного остаётся без ответа (`[--] не нам — молчим`) — так и
+задумано: в следующие 60 секунд после ответа позывной не нужен, «отбой»
+закрывает разговор.
+
+## 6. PTT
+
+Адаптер USB-UART воткнут, рация к нему ещё не подключена:
+
+```bash
+ls -l /dev/ttyUSB*
+.venv/bin/python tools/break_test.py --port /dev/ttyUSB0
+```
+
+Светодиод на адаптере должен мигать раз в полсекунды, в терминале — `break ON` /
+`break OFF`. `Ctrl+C`. Если `Permission denied` — группа `dialout` ещё не
+применилась (шаг 2).
+
+Как собрать провода и аттенюатор — в [README](README.md), раздел «Железо». Когда
+рация подключена, добавьте к команде из шага 5 два флага:
+
+```bash
+.venv/bin/python main.py run --live --responder remote --server http://192.168.1.10:8082 \
+    --threshold 0.00118 --in-device 4 --out-device 4 --ptt txdbreak --port /dev/ttyUSB0
+```
+
+При передаче в журнале `[PTT] KEY   (передача): break снят, TX high`, и рация
+уходит на передачу ровно между `KEY` и `UNKEY`. Если она, наоборот, передаёт всё
+время кроме этих моментов — добавьте `--no-invert`. Если адаптера нет или он
+выдернут, клиент не падает: пишет `[PTT] порт недоступен` и `[в эфир НЕ ушло]`,
+а после того как адаптер воткнут обратно, подхватывает его сам.
+
+## 7. Автозапуск
+
+Настройки — в файл, чтобы не править юнит при перекалибровке:
+
+```bash
+mkdir -p ~/.config/ai-radio ~/.config/systemd/user
+cat > ~/.config/ai-radio/agent.env <<'EOF'
+SERVER=http://192.168.1.10:8082
+THRESHOLD=0.00118
+EXTRA_ARGS=--in-device 4 --out-device 4 --ptt txdbreak --port /dev/ttyUSB0
+EOF
+```
+
+В `EXTRA_ARGS` устройства только номером или одним словом: systemd режет строку
+по пробелам, и имя из двух слов развалится на два флага. Если карта не умеет
+16 кГц и вы работаете с ней напрямую, мимо PipeWire, — добавьте
+`--device-rate 48000`.
+
+```bash
+cat > ~/.config/systemd/user/ai-radio-agent.service <<'EOF'
+[Unit]
+Description=AI Radio — agent (thin client)
+After=network.target
+
+[Service]
+WorkingDirectory=%h/AI_Radio_Agent
+EnvironmentFile=%h/.config/ai-radio/agent.env
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 120); do curl -sf -o /dev/null ${SERVER}/health && exit 0; sleep 5; done; exit 1'
+ExecStart=%h/AI_Radio_Agent/.venv/bin/python -u main.py run --live --responder remote \
+          --server ${SERVER} --threshold ${THRESHOLD} $EXTRA_ARGS
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+EOF
+sudo loginctl enable-linger $USER
+systemctl --user daemon-reload
+systemctl --user enable --now ai-radio-agent
+journalctl --user -u ai-radio-agent -f
+```
+
+`enable-linger` нужен, чтобы сервис поднимался после перезагрузки без входа в
+систему. В журнале должна появиться строка `[init] сервер …`, дальше — `[RX]`,
+`[STT]`, `[TX]` по мере работы. Пока мозг не отвечает, юнит ждёт его до десяти
+минут, потом перезапускается и ждёт снова.
+
+Перекалибровали порог — поправьте `THRESHOLD` и выполните
+`systemctl --user restart ai-radio-agent`. Обновить код:
+`cd ~/AI_Radio_Agent && git pull && systemctl --user restart ai-radio-agent`.
+
+## 8. Если клиент — ноутбук
+
+Ноутбук уснёт при закрытии крышки, и эфир останется без ответа. Запретить сон:
+
+```bash
+sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
+sudo sed -i 's/^#\?HandleLidSwitch=.*/HandleLidSwitch=ignore/' /etc/systemd/logind.conf
+sudo reboot
+```
+
+После перезагрузки `systemctl --user status ai-radio-agent` должен показать
+`active (running)` — это заодно проверка, что `enable-linger` сработал.
+
+## Если что-то не так
+
+| Что видно | Причина и что делать |
+|---|---|
+| `curl …/health` молчит | мозг не запущен или другая сеть. На машине с мозгом: `systemctl --user status ai-radio-server`, в его журнале строка «Сервер слушает …» показывает адрес и порт |
+| `[warn] сервер не отвечает`, `[ERR] … сервер недоступен` | то же самое; клиент при этом жив и подхватит мозг, как только тот появится |
+| `main.py devices` показывает только `pulse` и `default` | карты недоступны: либо группа `audio` не применилась (перелогиниться), либо карту держит другой звуковой сервер. Второе бывает при работе с картой напрямую — см. DEPLOY.md, раздел 6, «PulseAudio с PipeWire надо погасить» |
+| Фразы не ловятся вообще | порог велик — перекалибровать; проверить, что `--in-device` тот; карта не умеет 16 кГц — `--device-rate 48000` |
+| Ловится каждый шорох | порог мал; шумоподавитель рации открыт |
+| `[PTT] порт /dev/ttyUSB0 недоступен` | адаптер не воткнут или порт назван иначе (`ls /dev/ttyUSB*`); `Permission denied` — группа `dialout` |
+| В наушниках ответ есть, в эфир не уходит | в журнале `[в эфир НЕ ушло: PTT не нажался]` — см. строку выше; иначе инверсия PTT (`--no-invert`) или провод |
+| Ответ звучит голосом Piper, а не RVC | это на стороне мозга: там лежит RVC-сервис. Флаг `--rvc` на клиенте не действует |
+| В `[NET] сервер: N с` велика доля «из них сеть» | Wi-Fi: на проводе в одной сети это сотые доли секунды |
+| После перезагрузки сервис не поднялся | `loginctl show-user $USER \| grep Linger` должен дать `Linger=yes`; иначе повторить `sudo loginctl enable-linger $USER` |

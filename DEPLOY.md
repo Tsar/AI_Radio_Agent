@@ -603,7 +603,8 @@ EXTRA_ARGS=             # например --host 192.168.1.10, чтобы сл�
 привязать его к LAN-адресу через `--host` (пример в `server.env` выше).
 
 У рации — `ai-radio-agent.service` как выше, но без зависимостей от llm/rvc, с
-ожиданием сервера вместо llama-server и с `--responder remote`:
+ожиданием сервера вместо llama-server и с `--responder remote`. Установка клиентской
+машины с нуля, шаг за шагом, — в [CLIENT.md](CLIENT.md); здесь только сам юнит:
 
 ```ini
 [Unit]
