@@ -41,6 +41,7 @@ class MicSource:
         self.cap_rate = cap_rate
         self.cap_frame = frame_samples * self.decimate
         self._stream = None
+        self._reopen_on_resume = False   # см. resume(): бэкенд не умеет start() после stop()
 
     def _ensure(self) -> None:
         if self._stream is not None:
@@ -71,8 +72,30 @@ class MicSource:
             self._stream.stop()
 
     def resume(self) -> None:
-        if self._stream is not None and not self._stream.active:
+        if self._stream is None or self._stream.active:
+            return
+        if self._reopen_on_resume:
+            self._reopen()
+            return
+        try:
             self._stream.start()
+        except Exception as exc:        # noqa: BLE001 — sounddevice.PortAudioError и что угодно ещё
+            # Хост-API PulseAudio в PortAudio 19.7 (устройства «alsa_input.… PulseAudio»
+            # на любом десктопе с PipeWire) после stop() отвечает на start()
+            # «PortAudio not initialized», и агент падал на первой же фразе. Открыть
+            # поток заново стоит те же десятки миллисекунд, а буфер после этого пуст —
+            # ровно то, ради чего пауза и делалась. Дальше сразу переоткрываем, не
+            # пробуя start(): об этом бэкенде одной строки в журнале достаточно.
+            print(f"[MIC] поток не возобновился ({exc}) — дальше открываю заново на каждой паузе")
+            self._reopen_on_resume = True
+            self._reopen()
+
+    def _reopen(self) -> None:
+        try:
+            self.close()
+        except Exception:               # noqa: BLE001 — поток уже неисправен, закрывать нечего
+            self._stream = None
+        self._ensure()
 
     def close(self) -> None:
         if self._stream is not None:
