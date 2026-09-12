@@ -51,6 +51,13 @@ class MicSource:
             samplerate=self.cap_rate, channels=1, dtype="float32",
             blocksize=self.cap_frame, device=self.device)
         self._stream.start()
+        # Хост-API PulseAudio в PortAudio 19.7 (устройства «alsa_input.… PulseAudio»
+        # на любом десктопе с PipeWire) после stop() не умеет start(): «PortAudio not
+        # initialized». Для него пауза — это закрыть и открыть заново, что и делаем
+        # сразу, не дожидаясь отказа на первой фразе.
+        if not self._reopen_on_resume:
+            api = sd.query_hostapis(sd.query_devices(self._stream.device)["hostapi"])["name"]
+            self._reopen_on_resume = api == "PulseAudio"
 
     def frames(self) -> Iterator[List[float]]:
         import numpy as np
@@ -80,12 +87,9 @@ class MicSource:
         try:
             self._stream.start()
         except Exception as exc:        # noqa: BLE001 — sounddevice.PortAudioError и что угодно ещё
-            # Хост-API PulseAudio в PortAudio 19.7 (устройства «alsa_input.… PulseAudio»
-            # на любом десктопе с PipeWire) после stop() отвечает на start()
-            # «PortAudio not initialized», и агент падал на первой же фразе. Открыть
-            # поток заново стоит те же десятки миллисекунд, а буфер после этого пуст —
-            # ровно то, ради чего пауза и делалась. Дальше сразу переоткрываем, не
-            # пробуя start(): об этом бэкенде одной строки в журнале достаточно.
+            # Запасной путь для бэкендов, которых мы не знаем: открыть поток заново
+            # стоит те же десятки миллисекунд, а буфер после этого пуст — ровно то,
+            # ради чего пауза и делалась. Дальше переоткрываем сразу, не пробуя start().
             print(f"[MIC] поток не возобновился ({exc}) — дальше открываю заново на каждой паузе")
             self._reopen_on_resume = True
             self._reopen()
