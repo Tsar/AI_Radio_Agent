@@ -574,8 +574,10 @@ Wants=ai-radio-llm.service ai-radio-rvc.service
 [Service]
 WorkingDirectory=%h/AI_Radio_Agent
 EnvironmentFile=%h/.config/ai-radio/server.env
-ExecStartPre=/usr/bin/curl -s --retry 60 --retry-delay 2 --retry-connrefused \
-             --retry-all-errors -o /dev/null http://127.0.0.1:8080/health
+# Ждём llama-server циклом, а не флагами curl: --retry-all-errors есть только с curl
+# 7.71, а без него «connection reset» от умирающего старого процесса при restart
+# обоих юнитов роняет запуск. -f: 503 «модель ещё грузится» — тоже не успех.
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 90); do curl -sf -o /dev/null http://127.0.0.1:8080/health && exit 0; sleep 2; done; exit 1'
 ExecStart=%h/AI_Radio_Agent/.venv/bin/python -u main.py serve --rvc \
           --profile ${PROFILE} --reply-length ${REPLY_LENGTH} $EXTRA_ARGS
 Restart=always
@@ -608,8 +610,7 @@ After=network.target
 [Service]
 WorkingDirectory=%h/AI_Radio_Agent
 EnvironmentFile=%h/.config/ai-radio/agent.env
-ExecStartPre=/usr/bin/curl -s --retry 60 --retry-delay 5 --retry-connrefused \
-             --retry-all-errors -o /dev/null ${SERVER}/health
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 120); do curl -sf -o /dev/null ${SERVER}/health && exit 0; sleep 5; done; exit 1'
 ExecStart=%h/AI_Radio_Agent/.venv/bin/python -u main.py run --live --responder remote \
           --server ${SERVER} --threshold ${THRESHOLD} $EXTRA_ARGS
 Restart=always
@@ -635,17 +636,26 @@ pyserial), групп `audio` и `dialout` и всего, что выше ска
 - Бинарь llama.cpp лежит в `~/llama.cpp/build-prod/bin` (там его и собирали
   контейнером), CUDA-библиотеки для него — в `~/cudalibs`, а не в venv агента:
   в юните `Environment=LD_LIBRARY_PATH=%h/cudalibs` и путь `build-prod/bin`.
-- **curl 7.68** (Ubuntu 20.04) не знает `--retry-all-errors`: в `ExecStartPre`
-  оставить `--retry 60 --retry-delay 2 --retry-connrefused`, этого хватает и на
-  закрытый порт, и на 503 «модель ещё грузится».
+- **curl 7.68** (Ubuntu 20.04) не знает `--retry-all-errors`, и обновить его нельзя:
+  дистрибутив держит 7.68 навсегда, а на `libcurl4` висит полсистемы. Отсюда цикл в
+  `ExecStartPre` (выше): `--retry-connrefused` без `--retry-all-errors` не ловит
+  «connection reset» от умирающего старого llama-server, и `systemctl restart`
+  обоих юнитов разом ронял мозг на первой попытке.
 - **У машины два интерфейса, на одном публичный адрес.** Сервер привязан к
   LAN-адресу через `EXTRA_ARGS=--host 192.168.x.x` в `server.env`, проверено, что
   по публичному адресу порт 8082 закрыт. Отдельно нужно разрешить порт в `ufw`
   для подсети клиента.
 - RVC — без `--fp32` и `--max-segment`: P102-100 ловится авто-детектом,
   `/health` показывает `"is_half": false` и `x_max: 41`. Прогрев: 3.9 / 0.5 / 1.1 с.
-- Кэш Whisper остался в `~/.cache/huggingface` на `/` (2.9 ГБ): `/mnt/2TB`
-  принадлежит root. Python 3.10 — через `uv`, системный 3.8 не тронут.
+- **Тяжёлые модели — на HDD `/mnt/2TB/ai-radio`** (каталог создан root'ом и отдан
+  пользователю): GGUF через симлинк `models/llm → /mnt/2TB/ai-radio/models/llm`, кэш
+  Whisper через `Environment=HF_HOME=/mnt/2TB/ai-radio/hf` в юните мозга. Замер:
+  HDD читает 165 МБ/с против 453 у SSD, но модели читаются один раз при старте
+  (≈35 с на 5.3 ГБ) и дальше живут в VRAM; при 31 ГБ RAM повторный старт идёт из
+  page cache. **venv остаются на SSD**: тысячи мелких файлов, импорт torch с HDD
+  упирается в seek'и. Веса RVC (0.5 ГБ) переносить не стали. После переноса и
+  `uv cache clean` (4.9 ГБ) на `/` свободно 42 ГБ вместо 32. Python 3.10 — через
+  `uv`, системный 3.8 не тронут.
 - **На карте живёт сосед** (чужой сервис, ~1 ГБ), которому надо оставлять
   **не меньше 1.5 ГБ**. Замер на самой машине, `-c 4096`, `large-v3`, RVC fp32:
 
