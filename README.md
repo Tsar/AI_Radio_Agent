@@ -603,6 +603,7 @@ python3 tools/break_test.py --port /dev/ttyUSB0 --on 0.5 --off 0.5
 | `tts.voice` | `models/piper/ru_RU-irina-medium.onnx` | голос Piper (.onnx + одноимённый .onnx.json) |
 | `tts.peak_dbfs` | -3.0 | уровень в эфир: от него зависит глубина модуляции |
 | `dialog.callsign` | `феечка` | позывной |
+| `llm.system_prompt` | персона Феечки | кто она, чего у неё нет и как отвечать; правится шаблоном `SYSTEM_PROMPT` в `config.py` |
 | `dialog.match_threshold` | 0.75 | схожесть для срабатывания (см. `trigger-test`) |
 | `rvc.enabled` | False | включается флагом `--rvc` |
 | `rvc.base_url` | `http://127.0.0.1:8081` | адрес RVC-сервиса |
