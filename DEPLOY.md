@@ -21,6 +21,10 @@
 
 Обе на Pascal, поэтому CUDA 12 и fp32 в RVC актуальны для обеих.
 
+Стоять рядом с рацией им не обязательно: стек умеет работать врозь — мозг
+(`main.py serve`) на машине с видеокартой, тонкий клиент со звуком и PTT на любой
+машине в той же сети. Юниты для такого расклада — в конце раздела 6.
+
 **Особенности дачной машины:**
 
 - **RVC не догадается про fp32 сам.** `configs/config.py:device_config()` ищет в имени
@@ -552,6 +556,80 @@ journalctl --user -u ai-radio-agent -f
 Агент переживает отказ соседей: без llama-server он молчит, без RVC — передаёт голосом
 Piper. Так что при перезапуске одного из сервисов эфир не ломается.
 
+### Врозь: мозг на машине с видеокартой, клиент у рации
+
+Домашняя машина с P102-100 стоит там, где стоит, а рация — где антенна. Тогда на ней
+вместо агента поднимается сервер мозга, а агент у рации ходит к нему по сети. Юниты
+устроены так же, как выше; отличаются командой и тем, что кому нужно.
+
+На машине с видеокартой — `~/.config/systemd/user/ai-radio-server.service` вместо
+`ai-radio-agent.service` (`ai-radio-llm` и `ai-radio-rvc` остаются как есть):
+
+```ini
+[Unit]
+Description=AI Radio — brain server (STT → LLM → TTS over HTTP)
+After=ai-radio-llm.service ai-radio-rvc.service
+Wants=ai-radio-llm.service ai-radio-rvc.service
+
+[Service]
+WorkingDirectory=%h/AI_Radio_Agent
+EnvironmentFile=%h/.config/ai-radio/server.env
+ExecStartPre=/usr/bin/curl -s --retry 60 --retry-delay 2 --retry-connrefused \
+             --retry-all-errors -o /dev/null http://127.0.0.1:8080/health
+ExecStart=%h/AI_Radio_Agent/.venv/bin/python -u main.py serve --rvc \
+          --profile ${PROFILE} --reply-length ${REPLY_LENGTH} $EXTRA_ARGS
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+```
+
+`~/.config/ai-radio/server.env`:
+
+```ini
+PROFILE=vram10
+REPLY_LENGTH=short
+EXTRA_ARGS=             # например --host 192.168.1.10, чтобы слушать не все интерфейсы
+```
+
+Звук, группа `audio` и возня со звуковыми серверами этой машине не нужны; headless —
+нужен по прежней причине, видеопамять. Сервер слушает `0.0.0.0:8082` **без
+авторизации** — он для локальной сети, наружу его не выставлять.
+
+У рации — `ai-radio-agent.service` как выше, но без зависимостей от llm/rvc, с
+ожиданием сервера вместо llama-server и с `--responder remote`:
+
+```ini
+[Unit]
+Description=AI Radio — agent (thin client)
+After=network.target
+
+[Service]
+WorkingDirectory=%h/AI_Radio_Agent
+EnvironmentFile=%h/.config/ai-radio/agent.env
+ExecStartPre=/usr/bin/curl -s --retry 60 --retry-delay 5 --retry-connrefused \
+             --retry-all-errors -o /dev/null ${SERVER}/health
+ExecStart=%h/AI_Radio_Agent/.venv/bin/python -u main.py run --live --responder remote \
+          --server ${SERVER} --threshold ${THRESHOLD} $EXTRA_ARGS
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+```
+
+В `agent.env` вместо `PROFILE`/`REPLY_LENGTH` — `SERVER=http://192.168.1.10:8082`;
+`THRESHOLD` и `EXTRA_ARGS` (PTT, `--device-rate`, устройства) — как раньше, это
+флаги железа. На этой машине хватает `requirements.txt` (numpy, sounddevice,
+pyserial), групп `audio` и `dialout` и всего, что выше сказано про звуковые серверы:
+это относится к ней, а не к серверу. Ни моделей, ни CUDA здесь нет.
+
+Сервер ушёл или сеть пропала — клиент пишет `[ERR] … сервер недоступен`, пропускает
+фразу и продолжает слушать; вернувшийся сервер подхватывается на следующей же
+фразе, перезапуск не нужен. Проверить провод до того, как на сервере поставлены
+модели: `main.py serve --responder parrot` — клиент получит своё эхо и нажмёт PTT.
+
 ---
 
 ## 7. Диагностика
@@ -583,6 +661,9 @@ Piper. Так что при перезапуске одного из серви�
 | `ошибка: голос Piper не найден: models/piper/…` | путь в конфиге относительный. Движок ищет голос ещё и от корня проекта, так что это значит, что файла нет — скачайте его (команда в README) или укажите `--voice` |
 | `ResolutionImpossible` / `omegaconf` при установке RVC | pip 24.1+ отбрасывает колёса omegaconf 2.0.x из-за битых метаданных. `pip install "pip<24.1"` и повторить |
 | Whisper лезет в сеть на даче, хотя кэш «на месте» | каталог кэша для turbo — `models--mobiuslabsgmbh--…`, а не `Systran`. Проверять путём, который отдаёт сама библиотека (см. раздел 2) |
+| Клиент пишет `[warn] сервер не отвечает` или `[ERR] … сервер недоступен` | на машине с видеокартой не поднят `ai-radio-server`, либо в `SERVER` не тот адрес. С клиентской машины: `curl -s http://адрес:8082/health`. Сервер слушает `0.0.0.0`, так что дальше — файрвол между ними |
+| Голос Piper вместо RVC или не тот позывной, а флаги на клиенте не помогают | флаги мозга (`--rvc`, `--callsign`, `--profile`, `--reply-length`) действуют только у `serve`; клиент предупреждает `[warn] на клиенте не действуют` |
+| В `[NET] сервер: N с` велика доля «из них сеть» | Wi-Fi или загруженная сеть: на проводе в LAN это сотые доли секунды. `bench --server` покажет, где время |
 
 ---
 

@@ -172,6 +172,20 @@ class RvcConfig:
     timeout_s: float = 60.0
 
 
+REMOTE_PORT = 8082   # `main.py serve`; 8080 занят llama-server, 8081 — RVC
+
+
+@dataclass
+class RemoteConfig:
+    """Клиент-серверный режим. У рации — тонкий клиент: звук, VAD, PTT (numpy,
+    sounddevice, pyserial). Весь тяжёлый стек — STT → LLM → TTS (+ RVC) — считает
+    `main.py serve` на машине с видеокартой. Клиент шлёт принятую фразу целиком и
+    получает готовое аудио ответа: тот же шов Responder, только через HTTP."""
+    base_url: str = f"http://127.0.0.1:{REMOTE_PORT}"   # --server; сервер обычно в LAN
+    timeout_s: float = 60.0        # на весь ответ: STT + LLM + TTS + RVC; в бюджете 10 с
+                                   # это с запасом, но прогрев после старта дольше
+
+
 @dataclass
 class DialogConfig:
     callsign: str = CALLSIGN
@@ -195,6 +209,7 @@ class Config:
     llm: LlmConfig = field(default_factory=LlmConfig)
     tts: TtsConfig = field(default_factory=TtsConfig)
     rvc: RvcConfig = field(default_factory=RvcConfig)
+    remote: RemoteConfig = field(default_factory=RemoteConfig)
     dialog: DialogConfig = field(default_factory=DialogConfig)
     input_device: "int | str | None" = None
     output_device: "int | str | None" = None

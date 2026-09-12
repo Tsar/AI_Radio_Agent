@@ -15,13 +15,12 @@ RVC живёт **отдельным процессом со своим venv**: �
 """
 from __future__ import annotations
 
-import io
 import urllib.error
 import urllib.request
 import wave
-from typing import List, Optional
+from typing import List
 
-from ..audio_io import _floats_to_pcm16, normalize_peak, pcm16_to_floats, resample_linear
+from ..audio_io import floats_to_wav, normalize_peak, wav_to_floats
 from ..config import RvcConfig
 from .base import TtsEngine
 
@@ -49,33 +48,16 @@ class RvcVoice:
             params.append(f"formant_shift={self.cfg.formant_shift}")
         return f"{base}/convert?" + "&".join(params)
 
-    def _to_wav(self, samples: List[float]) -> bytes:
-        buf = io.BytesIO()
-        with wave.open(buf, "wb") as w:
-            w.setnchannels(1)
-            w.setsampwidth(2)
-            w.setframerate(self.sample_rate)
-            w.writeframes(_floats_to_pcm16(samples))
-        return buf.getvalue()
-
-    def _from_wav(self, data: bytes) -> List[float]:
-        with wave.open(io.BytesIO(data), "rb") as w:
-            rate = w.getframerate()
-            samples = pcm16_to_floats(w.readframes(w.getnframes()))
-        if rate != self.sample_rate:
-            samples = resample_linear(samples, rate, self.sample_rate)
-        return samples
-
     def convert(self, samples: List[float]) -> List[float]:
         """Переозвучить готовое аудио. Бросает URLError/OSError, если сервис лежит."""
         req = urllib.request.Request(
             self._url(),
-            data=self._to_wav(samples),
+            data=floats_to_wav(samples, self.sample_rate),
             headers={"Content-Type": "audio/wav"},
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=self.cfg.timeout_s) as resp:
-            return self._from_wav(resp.read())
+            return wav_to_floats(resp.read(), self.sample_rate)
 
     def synth(self, text: str) -> List[float]:
         samples = self.inner.synth(text)

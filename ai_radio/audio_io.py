@@ -7,9 +7,11 @@
 from __future__ import annotations
 
 import array
+import io
 import shutil
 import subprocess
 import time
+import wave
 from typing import Iterator, List, Optional, Sequence
 
 from .vad import dbfs_to_rms
@@ -136,6 +138,39 @@ def pcm16_to_floats(data: bytes) -> List[float]:
     pcm = array.array("h")
     pcm.frombytes(data)
     return [s / 32768.0 for s in pcm]
+
+
+def floats_to_wav(samples: Sequence[float], sample_rate: int) -> bytes:
+    """list[float] → WAV (16 бит, моно) в памяти.
+
+    Формат обмена по HTTP — и с RVC-сервисом, и между клиентом у рации и сервером
+    «мозга». WAV, а не сырой PCM: он несёт частоту, так что приёмная сторона может
+    её проверить и пересчитать, а ответ можно сохранить как есть и послушать.
+    """
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sample_rate)
+        w.writeframes(_floats_to_pcm16(list(samples)))
+    return buf.getvalue()
+
+
+def wav_to_floats(data: bytes, sample_rate: int) -> List[float]:
+    """WAV → list[float] на частоте sample_rate (пересчёт, если в файле другая).
+
+    Только моно 16 бит — другого мы не шлём. На битом входе бросает wave.Error
+    или EOFError, вызывающий решает, что с этим делать.
+    """
+    with wave.open(io.BytesIO(data), "rb") as w:
+        if w.getnchannels() != 1 or w.getsampwidth() != 2:
+            raise wave.Error(f"ожидается моно 16 бит, получено: каналов {w.getnchannels()}, "
+                             f"{w.getsampwidth() * 8} бит")
+        rate = w.getframerate()
+        samples = pcm16_to_floats(w.readframes(w.getnframes()))
+    if rate != sample_rate:
+        samples = resample_linear(samples, rate, sample_rate)
+    return samples
 
 
 class NullSink:

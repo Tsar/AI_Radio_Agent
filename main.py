@@ -4,7 +4,8 @@
 Режимы:
     calibrate     — подобрать порог VAD по аудиофайлу или с живого микрофона
     run           — репитер: на файле (→ out.wav) или живьём (--live);
-                    ответчик выбирается флагом --responder (parrot | llm)
+                    ответчик выбирается флагом --responder (parrot | llm | remote)
+    serve         — «мозг» по HTTP (STT → LLM → TTS) для клиентов с --responder remote
     bench         — прогнать запись через STT→LLM→TTS и показать задержку по звеньям
     trigger-test  — проверить срабатывание позывного на тексте (без моделей)
     devices       — список аудиоустройств (для выбора --in-device/--out-device)
@@ -15,6 +16,10 @@
     python3 main.py bench --in-file запись.mp3
     python3 main.py trigger-test "феечка как слышно" "привет всем"
     python3 main.py run --live --responder llm --ptt txdbreak --port /dev/ttyUSB0
+    # мозг на машине с видеокартой, тонкий клиент у рации:
+    python3 main.py serve --profile vram10 --rvc                       # там
+    python3 main.py run --live --responder remote --server http://мозг:8082 \
+        --ptt txdbreak --port /dev/ttyUSB0                              # здесь
 """
 from __future__ import annotations
 
@@ -22,8 +27,8 @@ import argparse
 import sys
 
 from ai_radio.calibrate import calibrate_file, calibrate_live, print_report
-from ai_radio.config import (DEFAULT_PROFILE, PROFILES, REPLY_LENGTHS, Config, apply_profile,
-                             apply_reply_length)
+from ai_radio.config import (DEFAULT_PROFILE, PROFILES, REMOTE_PORT, REPLY_LENGTHS, Config,
+                             apply_profile, apply_reply_length)
 from ai_radio.ptt import make_ptt
 from ai_radio.repeater import Repeater
 from ai_radio.responder import ParrotResponder
@@ -38,6 +43,23 @@ def _apply_common(cfg: Config, args: argparse.Namespace) -> None:
         cfg.vad.hangtime_ms = args.hangtime_ms
     if getattr(args, "max_utterance_ms", None) is not None:
         cfg.vad.max_utterance_ms = args.max_utterance_ms
+    if getattr(args, "server", None):
+        cfg.remote.base_url = args.server
+
+
+# Флаги «мозга». На клиенте (--responder remote) они не действуют: модель, позывной и
+# голос выбирает тот, кто запускает `serve`. Молча проглотить их нельзя — человек у
+# рации решит, что --rvc включён, и будет искать, почему голос не тот.
+_BRAIN_FLAGS = ("profile", "reply_length", "stt_model", "stt_device", "llm_url", "voice",
+                "callsign", "rvc", "rvc_voice", "rvc_url", "rvc_formant")
+
+
+def _warn_brain_flags(args: argparse.Namespace) -> None:
+    given = [n for n in _BRAIN_FLAGS if getattr(args, n, None) not in (None, False)]
+    if given:
+        flags = ", ".join("--" + n.replace("_", "-") for n in given)
+        print(f"[warn] на клиенте не действуют: {flags} — это флаги мозга, "
+              f"задайте их на сервере (main.py serve)")
 
 
 def _apply_ai(cfg: Config, args: argparse.Namespace) -> None:
@@ -69,10 +91,29 @@ def _apply_ai(cfg: Config, args: argparse.Namespace) -> None:
         cfg.dialog.callsign_variants = [args.callsign]
 
 
+def _make_remote_responder(cfg: Config, args: argparse.Namespace):
+    from ai_radio.remote import RemoteResponder
+    _warn_brain_flags(args)
+    responder = RemoteResponder(cfg.remote, sample_rate=cfg.audio.sample_rate)
+    info = responder.health()
+    if info is None:
+        print(f"[warn] сервер не отвечает по {cfg.remote.base_url} — "
+              f"ответы работать не будут, пока он не поднят")
+    else:
+        # Какой именно мозг на том конце: перепутать адрес легко, а по звуку не понять
+        rvc = "с RVC" if info.get("rvc") else "без RVC"
+        print(f"[init] сервер {cfg.remote.base_url}: ответчик {info.get('responder')}, "
+              f"позывной {info.get('callsign')}, STT {info.get('stt')}, {rvc}")
+    return responder
+
+
 def _make_responder(cfg: Config, args: argparse.Namespace):
-    if getattr(args, "responder", "parrot") == "llm":
+    kind = getattr(args, "responder", "parrot")
+    if kind == "llm":
         from ai_radio.responder import build_llm_responder
         return build_llm_responder(cfg)
+    if kind == "remote":
+        return _make_remote_responder(cfg, args)
     return ParrotResponder()
 
 
@@ -152,6 +193,13 @@ def _run_live(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_serve(args: argparse.Namespace) -> int:
+    from ai_radio.server import serve
+    cfg = Config()
+    _apply_ai(cfg, args)
+    return serve(cfg, args.host, args.port, kind=args.responder)
+
+
 def cmd_bench(args: argparse.Namespace) -> int:
     from ai_radio.bench import run_bench
     if not args.in_file:
@@ -160,7 +208,10 @@ def cmd_bench(args: argparse.Namespace) -> int:
     cfg = Config()
     _apply_common(cfg, args)
     _apply_ai(cfg, args)
-    return run_bench(cfg, args.in_file, budget_s=args.budget, realtime=args.realtime)
+    if args.server:
+        _warn_brain_flags(args)
+    return run_bench(cfg, args.in_file, budget_s=args.budget, realtime=args.realtime,
+                     remote=bool(args.server))
 
 
 def cmd_trigger_test(args: argparse.Namespace) -> int:
@@ -251,8 +302,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     r = sub.add_parser("run", help="репитер: файл (→ wav) или живьём (--live)")
     r.add_argument("--live", action="store_true", help="живой режим: микрофон/динамик + PTT")
-    r.add_argument("--responder", default="parrot", choices=["parrot", "llm"],
-                   help="кто формирует ответ (по умолчанию parrot — этап 1)")
+    r.add_argument("--responder", default="parrot", choices=["parrot", "llm", "remote"],
+                   help="кто формирует ответ: parrot — эхо (этап 1), llm — STT→LLM→TTS "
+                        "здесь же, remote — на сервере (main.py serve)")
+    r.add_argument("--server", help="адрес сервера для --responder remote "
+                                    f"(по умолчанию http://127.0.0.1:{REMOTE_PORT})")
     r.add_argument("--in-file", help="входной аудиофайл (файловый режим)")
     r.add_argument("--out-file", help="куда записать переданное WAV (файловый режим)")
     r.add_argument("--threshold", type=float, help="порог VAD (переопределить дефолт)")
@@ -274,8 +328,20 @@ def build_parser() -> argparse.ArgumentParser:
     _add_ai_args(r)
     r.set_defaults(func=cmd_run)
 
+    sv = sub.add_parser("serve", help="сервер мозга: STT → LLM → TTS по HTTP для клиентов у рации")
+    sv.add_argument("--host", default="0.0.0.0",
+                    help="интерфейс (по умолчанию все — клиент в LAN; авторизации нет)")
+    sv.add_argument("--port", type=int, default=REMOTE_PORT,
+                    help=f"порт (по умолчанию {REMOTE_PORT})")
+    sv.add_argument("--responder", default="llm", choices=["llm", "parrot"],
+                    help="parrot — эхо: проверить связь и PTT клиента без моделей")
+    _add_ai_args(sv)
+    sv.set_defaults(func=cmd_serve)
+
     b = sub.add_parser("bench", help="замер задержки STT/LLM/TTS на записи из эфира")
     b.add_argument("--in-file", help="запись из эфира (mp3/wav/...)")
+    b.add_argument("--server", help="мерить через сервер (main.py serve) по этому адресу — "
+                                    "в «итого» войдёт и сеть")
     b.add_argument("--budget", type=float, default=10.0, help="допустимая задержка ответа, с")
     b.add_argument("--threshold", type=float, help="порог VAD")
     b.add_argument("--hangtime-ms", type=int, help="тишины до конца передачи")

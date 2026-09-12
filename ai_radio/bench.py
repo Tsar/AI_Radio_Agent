@@ -7,24 +7,29 @@
 
 Прогон идёт через настоящий конвейер (FileSource → VAD → Repeater → LLMResponder),
 поэтому меряется ровно то, что будет в эфире, включая фразы, на которые агент молчит.
+С `remote=True` на месте LLMResponder стоит RemoteResponder — тогда «итого» включает
+и сеть до сервера, а колонки STT/LLM/TTS приходят с него.
 """
 from __future__ import annotations
 
+import sys
 import time
 from typing import Dict, List, Optional
 
 from .audio_io import FileSource, NullSink
 from .config import Config
 from .ptt import DummyPtt
+from .remote import RemoteResponder
 from .repeater import Repeater
 from .responder import LLMResponder
 from .vad import EnergyVad
 
 
 class BenchResponder:
-    """Обёртка над LLMResponder: считает время каждой фразы, не меняя поведения."""
+    """Обёртка над LLMResponder (или RemoteResponder — у него те же timings):
+    считает время каждой фразы, не меняя поведения."""
 
-    def __init__(self, inner: LLMResponder, sample_rate: int) -> None:
+    def __init__(self, inner: "LLMResponder | RemoteResponder", sample_rate: int) -> None:
         self.inner = inner
         self.sample_rate = sample_rate
         self.records: List[Dict[str, float]] = []
@@ -77,10 +82,20 @@ def print_report(records: List[Dict[str, float]], budget_s: float) -> None:
 
 
 def run_bench(cfg: Config, in_file: str, budget_s: float = 10.0,
-              realtime: bool = False) -> int:
+              realtime: bool = False, remote: bool = False) -> int:
     from .responder import build_llm_responder
 
-    responder = build_llm_responder(cfg)
+    responder: "LLMResponder | RemoteResponder"
+    if remote:
+        responder = RemoteResponder(cfg.remote, sample_rate=cfg.audio.sample_rate)
+        if responder.health() is None:
+            # без llama-server bench хотя бы меряет STT; без сервера мерить нечего
+            print(f"сервер не отвечает по {cfg.remote.base_url} — мерить нечего",
+                  file=sys.stderr)
+            return 1
+        print(f"[init] сервер {cfg.remote.base_url}: в «итого» войдёт и сеть")
+    else:
+        responder = build_llm_responder(cfg)
     bench = BenchResponder(responder, cfg.audio.sample_rate)
 
     source = FileSource(in_file, sample_rate=cfg.audio.sample_rate,

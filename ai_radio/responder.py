@@ -10,7 +10,7 @@ LLMResponder (этап 2) — это tts(llm(stt(utterance))). Всё остал
 from __future__ import annotations
 
 import time
-from typing import Dict, List, Optional, Protocol
+from typing import Callable, Dict, List, Optional, Protocol
 
 from .config import Config
 from .dialog import DialogState
@@ -37,13 +37,18 @@ class LLMResponder:
     """Цепочка STT → триггер/диалог → LLM → нормализация текста → TTS."""
 
     def __init__(self, cfg: Config, stt: SttEngine, llm: LlmEngine, tts: TtsEngine,
-                 dialog: Optional[DialogState] = None) -> None:
+                 dialog: Optional[DialogState] = None,
+                 log: Callable[[str], None] = print) -> None:
         self.cfg = cfg
         self.stt = stt
         self.llm = llm
         self.tts = tts
         self.dialog = dialog if dialog is not None else DialogState(cfg.dialog)
         self.timings: Dict[str, float] = {}   # длительности звеньев последнего ответа, с
+        # Журнал фразы идёт через log, а не print: сервер (server.py) собирает эти
+        # строки и отдаёт клиенту у рации вместе с ответом — там по ним видно, что
+        # услышал Whisper и почему агент молчит, не заглядывая в журнал сервера.
+        self.log = log
 
     def respond(self, utterance: List[float]) -> Optional[List[float]]:
         self.timings = {}
@@ -52,7 +57,7 @@ class LLMResponder:
         text = self.stt.transcribe(utterance)
         self.timings["stt"] = time.monotonic() - t0
         if not text:
-            print("[STT] не разобрал — молчим")
+            self.log("[STT] не разобрал — молчим")
             return None
 
         # Проверяем до триггера и до диалога: галлюцинация не должна ни вызывать
@@ -73,28 +78,28 @@ class LLMResponder:
                 long_dur_s=cfg_h.long_dur_s, long_min_chars=cfg_h.long_min_chars)
             if reason:
                 whole = f"{text} {removed}".strip()
-                print(f"[STT] {whole}  → галлюцинация ({reason}), молчим")
+                self.log(f"[STT] {whole}  → галлюцинация ({reason}), молчим")
                 return None
             if removed:
-                print(f"[STT] {text}  (срезан титр: «{removed}»)")
+                self.log(f"[STT] {text}  (срезан титр: «{removed}»)")
             else:
-                print(f"[STT] {text}")
+                self.log(f"[STT] {text}")
         else:
-            print(f"[STT] {text}")
+            self.log(f"[STT] {text}")
 
         if self.dialog.is_end_phrase(text):
             self.dialog.reset()
-            print("[--] отбой — диалог закрыт")
+            self.log("[--] отбой — диалог закрыт")
             return None
 
         if self.dialog.expire_if_stale():
-            print("[..] прошлый разговор закрыт по таймауту — контекст очищен")
+            self.log("[..] прошлый разговор закрыт по таймауту — контекст очищен")
 
         answer, reason = self.dialog.should_answer(text)
         if not answer:
-            print(f"[--] {reason} — молчим")
+            self.log(f"[--] {reason} — молчим")
             return None
-        print(f"[..] отвечаем ({reason})")
+        self.log(f"[..] отвечаем ({reason})")
 
         self.dialog.add_user(text)
         t0 = time.monotonic()
@@ -102,7 +107,7 @@ class LLMResponder:
             raw = self.llm.reply(self.dialog.messages(self.cfg.llm.system_prompt))
         except LlmUnavailable as exc:
             self.dialog.history.pop()      # неудачную реплику в контексте не копим
-            print(f"[ERR] {exc}")
+            self.log(f"[ERR] {exc}")
             return None
         finally:
             self.timings["llm"] = time.monotonic() - t0
@@ -111,21 +116,22 @@ class LLMResponder:
                                 max_chars=self.cfg.llm.max_chars)
         if not reply:
             self.dialog.history.pop()
-            print("[LLM] пустой ответ — молчим")
+            self.log("[LLM] пустой ответ — молчим")
             return None
-        print(f"[LLM] {reply}")
+        self.log(f"[LLM] {reply}")
         self.dialog.add_assistant(reply)
 
         t0 = time.monotonic()
         audio = self.tts.synth(reply)
         self.timings["tts"] = time.monotonic() - t0
         if not audio:
-            print("[TTS] нечего передавать")
+            self.log("[TTS] нечего передавать")
             return None
         return audio
 
 
-def build_llm_responder(cfg: Config, check_llm: bool = True) -> LLMResponder:
+def build_llm_responder(cfg: Config, check_llm: bool = True,
+                        log: Callable[[str], None] = print) -> LLMResponder:
     """Собрать движки по конфигу. Всё грузится один раз здесь, на старте."""
     from .engines import make_llm, make_stt, make_tts
 
@@ -149,4 +155,4 @@ def build_llm_responder(cfg: Config, check_llm: bool = True) -> LLMResponder:
         print(f"[init] LLM: {cfg.llm.base_url}")
     print(f"[init] позывной: {cfg.dialog.callsign}, окно диалога {cfg.dialog.window_s:.0f} с, "
           f"ответы {cfg.llm.reply_length} (≤{cfg.llm.max_sentences} предл.)")
-    return LLMResponder(cfg, stt, llm, tts)
+    return LLMResponder(cfg, stt, llm, tts, log=log)
