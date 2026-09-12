@@ -224,6 +224,22 @@ journalctl --user -u ai-radio-agent -f
 `[STT]`, `[TX]` по мере работы. Пока мозг не отвечает, юнит ждёт его до десяти
 минут, потом перезапускается и ждёт снова.
 
+**Если за машиной работает человек**, юнит выше не годится: с `linger` он
+стартует ещё до входа в систему, когда звуковой карты у пользователя нет, и уходит
+в бесконечный перезапуск. Такой сервис привязывают к графической сессии — он
+поднимается вместе с рабочим столом и гаснет при выходе. В `[Unit]` вместо
+`After=network.target`:
+
+```ini
+After=graphical-session.target
+PartOf=graphical-session.target
+```
+
+и в `[Install]` — `WantedBy=graphical-session.target` вместо `default.target`.
+`enable-linger` для такой машины не нужен. Проверено на Ubuntu 22.04 с GNOME;
+если рабочий стол не поднимает `graphical-session.target`, останется вариант с
+`default.target`, но тогда linger лучше выключить.
+
 Перекалибровали порог — поправьте `THRESHOLD` и выполните
 `systemctl --user restart ai-radio-agent`. Обновить код:
 `cd ~/AI_Radio_Agent && git pull && systemctl --user restart ai-radio-agent`.
