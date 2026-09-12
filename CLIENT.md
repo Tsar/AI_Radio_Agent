@@ -349,7 +349,16 @@ journalctl --user -u ai-radio-agent --since today | grep '\[LLM\]'   # что о
 
 Перекалибровать порог, не трогая сервис, нельзя: микрофон занят. Сначала
 `systemctl --user stop ai-radio-agent`, потом калибровка, потом новое значение в
-`agent.env` и `start`.
+`agent.env` и `start`. **Если устройства прибиты** через `PULSE_SOURCE`, мерить
+надо тот же вход, иначе получите порог для системного по умолчанию, а он другой:
+
+```bash
+systemctl --user stop ai-radio-agent
+PULSE_SOURCE=alsa_input.pci-0000_00_1b.0.analog-stereo \
+    .venv/bin/python main.py calibrate --live --seconds 12 --in-device pulse
+# новое число в THRESHOLD, затем
+systemctl --user start ai-radio-agent
+```
 
 ## Если что-то не так
 
