@@ -257,6 +257,39 @@ sudo reboot
 После перезагрузки `systemctl --user status ai-radio-agent` должен показать
 `active (running)` — это заодно проверка, что `enable-linger` сработал.
 
+## 9. Повседневные команды
+
+Всё на самой клиентской машине, под тем пользователем, у которого стоит сервис.
+По ssh работает без дополнительных переменных, если этот пользователь вошёл в
+систему за монитором.
+
+```bash
+systemctl --user status  ai-radio-agent     # работает ли, с какого времени, последние строки
+systemctl --user restart ai-radio-agent     # перечитать agent.env: порог, адрес, флаги
+systemctl --user stop    ai-radio-agent     # выключить сейчас
+systemctl --user start   ai-radio-agent     # включить сейчас
+systemctl --user enable  ai-radio-agent     # поднимать автоматически
+systemctl --user disable ai-radio-agent     # не поднимать автоматически
+journalctl --user -u ai-radio-agent -f      # смотреть журнал вживую
+journalctl --user -u ai-radio-agent --since today | grep '\[LLM\]'   # что отвечала за сегодня
+```
+
+`stop` — не навсегда: пока сервис в автозапуске, он поднимется при следующем входе
+в систему (или при загрузке машины, если юнит на `default.target` с `linger`).
+Выключить совсем — `disable --now`, вернуть — `enable --now`.
+
+Что после чего перезапускать:
+
+| Что поменяли | Команда |
+|---|---|
+| порог, адрес мозга, флаги в `agent.env` | `systemctl --user restart ai-radio-agent` |
+| сам файл юнита | `systemctl --user daemon-reload && systemctl --user restart ai-radio-agent` |
+| код: `git pull` | `systemctl --user restart ai-radio-agent` |
+
+Перекалибровать порог, не трогая сервис, нельзя: микрофон занят. Сначала
+`systemctl --user stop ai-radio-agent`, потом калибровка, потом новое значение в
+`agent.env` и `start`.
+
 ## Если что-то не так
 
 | Что видно | Причина и что делать |

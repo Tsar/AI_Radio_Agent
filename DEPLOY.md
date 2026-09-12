@@ -705,6 +705,42 @@ pyserial), групп `audio` и `dialout` и всего, что выше ска
 - Замер с Qwen3-8B, `bench --server` с dev-машины через LAN: **1.6–1.9 с** на фразу
   (STT 0.6 / LLM 0.5–0.6 / TTS+RVC 0.45), сеть 0.15 с. С 4B было 1.4 с. Бюджет 10 с.
 
+### Повседневные команды
+
+Юниты пользовательские, поэтому все команды с `--user`. **По ssh неинтерактивно
+`XDG_RUNTIME_DIR` не выставляется**, и `systemctl --user` отвечает «Failed to
+connect to bus» — поэтому строка ниже начинается с `export`:
+
+```bash
+export XDG_RUNTIME_DIR=/run/user/$(id -u)
+
+systemctl --user status  ai-radio-server            # мозг: работает ли
+systemctl --user restart ai-radio-server            # перечитать server.env
+systemctl --user restart ai-radio-llm               # сменить модель или контекст
+systemctl --user restart ai-radio-rvc               # переозвучка (с прогревом)
+systemctl --user stop    ai-radio-{server,llm,rvc}  # погасить стек и освободить карту
+systemctl --user start   ai-radio-{llm,rvc,server}  # поднять в этом порядке
+systemctl --user disable ai-radio-server            # убрать из автозапуска
+systemctl --user enable  ai-radio-server            # вернуть
+
+journalctl --user -u ai-radio-server -f             # журнал мозга вживую
+journalctl --user -u ai-radio-server --since today | grep '\[LLM\]'
+journalctl --user -u ai-radio-rvc | grep warmup     # прогрелся ли RVC
+```
+
+Живы ли соседи, не заходя в журнал:
+
+```bash
+curl -s http://127.0.0.1:8080/health     # llama-server: {"status":"ok"}
+curl -s http://127.0.0.1:8081/health     # RVC: голос, is_half, chunking
+curl -s http://АДРЕС-В-LAN:8082/health   # мозг: позывной, модель STT, RVC
+nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv
+```
+
+Порядок при перезапуске стека важен: мозг ждёт `llama-server` в `ExecStartPre` и
+не поднимется раньше него. Перезапуск `ai-radio-llm` или `ai-radio-rvc` по
+отдельности мозг переживает: без LLM он молчит, без RVC отвечает голосом Piper.
+
 ---
 
 ## 7. Диагностика
