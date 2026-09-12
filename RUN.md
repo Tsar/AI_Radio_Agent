@@ -74,8 +74,8 @@ curl -s http://127.0.0.1:8081/health    # {"status":"ok","voice":"voicevox_speak
 .venv/bin/python main.py serve --rvc --profile vram5
 ```
 
-Он слушает `0.0.0.0:8082`; `curl -s http://127.0.0.1:8082/health` покажет позывной и
-модель. На машине у рации нужен только `requirements.txt`:
+Он слушает `0.0.0.0:8082` (на машине с публичным интерфейсом — `--host LAN-адрес`);
+`curl -s http://127.0.0.1:8082/health` покажет позывной и модель. На машине у рации нужен только `requirements.txt`:
 
 ```bash
 .venv/bin/python main.py run --live --responder remote --server http://<этот-хост>:8082 \
@@ -134,6 +134,7 @@ dev-машине подключён к той же 2070. Пока стек бы�
 
 | | Локально | Дачная (P2000, 5 ГБ) | Домашняя (P102-100, 10 ГБ) |
 |---|---|---|---|
+| Роль | агент целиком | агент целиком | мозг (`serve`) для клиента у рации |
 | PTT | заглушка | `--ptt txdbreak --port /dev/ttyUSB0` | — |
 | Звуковая карта | системный дефолт | `--device-rate 48000` | — |
 | Профиль STT | `vram5` | `vram5` (turbo) | `vram10` (large-v3) |
